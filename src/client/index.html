@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenFrontClone</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0b1220;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+        cursor: grab;
+      }
+      #status {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        color: #9fb3c8;
+        font: 12px monospace;
+        pointer-events: none;
+      }
+      #panel {
+        position: fixed;
+        top: 8px;
+        right: 8px;
+        min-width: 180px;
+        background: rgba(11, 18, 32, 0.85);
+        border: 1px solid #26374f;
+        border-radius: 6px;
+        padding: 10px 12px;
+        color: #e6edf3;
+        font: 13px monospace;
+        pointer-events: none;
+      }
+      #panel .self {
+        color: #ffd166;
+        margin-bottom: 6px;
+      }
+      #panel .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        opacity: 0.85;
+      }
+      #hint {
+        position: fixed;
+        bottom: 62px;
+        right: 8px;
+        color: #6c7f95;
+        font: 11px monospace;
+        pointer-events: none;
+        text-align: right;
+      }
+      #banner {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.6);
+        color: #fff;
+        font: bold 32px sans-serif;
+        letter-spacing: 1px;
+      }
+      #buildBar {
+        position: fixed;
+        left: 50%;
+        bottom: 10px;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 8px;
+        background: rgba(11, 18, 32, 0.85);
+        border: 1px solid #26374f;
+        border-radius: 8px;
+        padding: 8px;
+      }
+      #buildBar button {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        background: #16233a;
+        border: 1px solid #2c3f5c;
+        border-radius: 6px;
+        color: #e6edf3;
+        font: 12px monospace;
+        padding: 8px 14px;
+        cursor: pointer;
+      }
+      #buildBar button:hover {
+        background: #1e3050;
+      }
+      #buildBar button.active {
+        background: #3a5a8a;
+        border-color: #7aa6ff;
+        box-shadow: 0 0 0 2px rgba(122, 166, 255, 0.4);
+      }
+      #buildBar .icon {
+        font-size: 18px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">bağlanıyor...</div>
+    <div id="panel"></div>
+    <div id="hint">
+      Tekerlek: yakınlaştır/uzaklaştır &nbsp;|&nbsp; Sürükle: haritada gez &nbsp;|&nbsp; Tık: bölgeye saldır
+      (tekrar tıkla: hızlandır) &nbsp;|&nbsp; Sağ tık: saldırıları iptal et
+    </div>
+    <div id="buildBar">
+      <button id="btn-city" data-building="city">
+        <span class="icon">🏙️</span>
+        <span>Şehir (300)</span>
+      </button>
+      <button id="btn-defense" data-building="defensePost">
+        <span class="icon">🛡️</span>
+        <span>Karakol (200)</span>
+      </button>
+    </div>
+    <div id="banner"></div>
+    <canvas id="game"></canvas>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
