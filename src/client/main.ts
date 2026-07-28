@@ -36,6 +36,7 @@ let selfId: number | null = null;
 let players = new Map<number, PlayerStateDTO>();
 let buildings = new Map<number, BuildingDTO>();
 let mapWidth = 0;
+let mapHeight = 0;
 let ownerByTile: Int32Array = new Int32Array(0);
 let regionOf: Int32Array = new Int32Array(0);
 let isBorderTile: Uint8Array = new Uint8Array(0);
@@ -82,6 +83,7 @@ ws.addEventListener("message", (event) => {
 
 function handleMap(msg: MapMessage): void {
   mapWidth = msg.width;
+  mapHeight = msg.height;
   ownerByTile = new Int32Array(msg.width * msg.height).fill(-1);
   regionOf = Int32Array.from(msg.regionOf);
   regionNeighbors = new Map(msg.regions.map((r) => [r.id, r.neighbors]));
@@ -175,15 +177,73 @@ function updateBuildings(list: BuildingDTO[]): void {
   );
 }
 
+const eatOrderCache = new Map<string, number[]>();
+
+/**
+ * Bir bölgenin tile'larını, saldırganın toprağına komşu sınırdan başlayıp
+ * BFS ile içeri doğru yayılan sırayla döndürür — kuşatma ilerledikçe
+ * "yenilen" alanın saldırgan yönünden içeri doğru büyümesi için.
+ */
+function computeEatOrder(regionId: number, attackerId: number): number[] {
+  const tiles = tilesByRegion[regionId] ?? [];
+  if (tiles.length === 0) return [];
+  const tileSet = new Set(tiles);
+
+  const neighborsOf = (idx: number): number[] => {
+    const x = idx % mapWidth;
+    const y = Math.floor(idx / mapWidth);
+    const out: number[] = [];
+    if (x > 0) out.push(idx - 1);
+    if (x < mapWidth - 1) out.push(idx + 1);
+    if (y > 0) out.push(idx - mapWidth);
+    if (y < mapHeight - 1) out.push(idx + mapWidth);
+    return out;
+  };
+
+  const frontier: number[] = [];
+  for (const idx of tiles) {
+    if (!isBorderTile[idx]) continue;
+    if (neighborsOf(idx).some((n) => ownerByTile[n] === attackerId)) frontier.push(idx);
+  }
+  if (frontier.length === 0) frontier.push(tiles[0]);
+
+  const visited = new Set(frontier);
+  const order = [...frontier];
+  for (let head = 0; head < order.length; head++) {
+    for (const n of neighborsOf(order[head])) {
+      if (tileSet.has(n) && !visited.has(n)) {
+        visited.add(n);
+        order.push(n);
+      }
+    }
+  }
+  return order;
+}
+
 function updateSieges(list: SiegeDTO[]): void {
-  renderer.setSieges(
-    list.map((s) => ({
-      regionId: s.regionId,
+  const activeKeys = new Set<string>();
+
+  const overlays = list.map((s) => {
+    const key = `${s.regionId}:${s.attackerId}`;
+    activeKeys.add(key);
+    let tiles = eatOrderCache.get(key);
+    if (!tiles) {
+      tiles = computeEatOrder(s.regionId, s.attackerId);
+      eatOrderCache.set(key, tiles);
+    }
+    const progress = s.maxGarrison > 0 ? Math.min(1, Math.max(0, 1 - s.garrison / s.maxGarrison)) : 0;
+    return {
       attackerColor: players.get(s.attackerId)?.color ?? "#ffffff",
-      garrison: s.garrison,
-      maxGarrison: s.maxGarrison,
-    })),
-  );
+      tiles,
+      progress,
+    };
+  });
+
+  for (const key of eatOrderCache.keys()) {
+    if (!activeKeys.has(key)) eatOrderCache.delete(key);
+  }
+
+  renderer.setSiegeOverlays(overlays);
 }
 
 function centerCameraOnSelf(): void {

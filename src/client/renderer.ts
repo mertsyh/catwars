@@ -26,11 +26,12 @@ export interface RegionLabel {
   centerY: number;
 }
 
-export interface SiegeBar {
-  regionId: number;
+export interface SiegeOverlay {
   attackerColor: string;
-  garrison: number;
-  maxGarrison: number;
+  /** Bölge tile'ları, saldırganın sınırından başlayarak "yenilme" sırasına göre dizilmiş. */
+  tiles: number[];
+  /** 0..1 — kuşatmanın ne kadarının tamamlandığı (garrison ne kadar azaldı). */
+  progress: number;
 }
 
 export type HoverKind = "self" | "valid" | "invalid";
@@ -56,6 +57,10 @@ const RIPPLE_COLORS: Record<RippleKind, string> = {
   cancel: "224, 224, 224",
 };
 
+const EATEN_ALPHA = 0.6;
+const FRONTIER_TILE_SPAN = 3;
+const FRONTIER_PULSE_PERIOD_MS = 220;
+
 const HOVER_COLORS: Record<HoverKind, string> = {
   self: "255, 255, 255",
   valid: "120, 220, 120",
@@ -78,8 +83,7 @@ export class MapRenderer {
 
   private buildingMarkers: BuildingMarker[] = [];
   private regionLabels: RegionLabel[] = [];
-  private regionById = new Map<number, RegionLabel>();
-  private sieges: SiegeBar[] = [];
+  private siegeOverlays: SiegeOverlay[] = [];
   private hoverTiles: number[] = [];
   private hoverKind: HoverKind = "invalid";
   private ripples: Ripple[] = [];
@@ -127,11 +131,10 @@ export class MapRenderer {
 
   setRegionLabels(regions: RegionLabel[]): void {
     this.regionLabels = regions;
-    this.regionById = new Map(regions.map((r) => [r.id, r]));
   }
 
-  setSieges(sieges: SiegeBar[]): void {
-    this.sieges = sieges;
+  setSiegeOverlays(overlays: SiegeOverlay[]): void {
+    this.siegeOverlays = overlays;
   }
 
   setHoverRegion(tiles: number[], kind: HoverKind): void {
@@ -209,7 +212,7 @@ export class MapRenderer {
 
     this.drawBuildingMarkers(scale, offsetX, offsetY);
     this.drawHoverRegion(scale, offsetX, offsetY);
-    this.drawSieges(scale, offsetX, offsetY);
+    this.drawSiegeOverlays(scale, offsetX, offsetY);
     this.drawRegionLabels(scale, offsetX, offsetY);
     this.drawRipples(scale, offsetX, offsetY);
   }
@@ -273,32 +276,42 @@ export class MapRenderer {
     }
   }
 
-  private drawSieges(scale: number, offsetX: number, offsetY: number): void {
-    if (this.sieges.length === 0) return;
-    const { ctx } = this;
-    const barWidth = 56;
-    const barHeight = 8;
+  /**
+   * Kuşatma ilerlemesini bölgenin üstünde bir sayı/bar olarak değil, doğrudan
+   * tile'ların üzerinde saldırganın renginin "yemesi" gibi gösterir: tiles[]
+   * saldırgana en yakın sınırdan başlayan sırayla dizilmiştir (main.ts'te
+   * hesaplanır), progress kadarı yenilmiş sayılır. Yenilecek sıradaki birkaç
+   * tile nabız gibi vurgulanır (ısırık efekti).
+   */
+  private drawSiegeOverlays(scale: number, offsetX: number, offsetY: number): void {
+    if (this.siegeOverlays.length === 0) return;
+    const { ctx, mapWidth } = this;
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / FRONTIER_PULSE_PERIOD_MS);
 
-    for (const siege of this.sieges) {
-      const region = this.regionById.get(siege.regionId);
-      if (!region) continue;
-      const px = offsetX + region.centerX * scale;
-      const py = offsetY + region.centerY * scale;
-      const fraction = siege.maxGarrison > 0 ? Math.max(0, siege.garrison / siege.maxGarrison) : 0;
+    for (const overlay of this.siegeOverlays) {
+      const total = overlay.tiles.length;
+      if (total === 0) continue;
+      const [r, g, b] = hexToRgb(overlay.attackerColor);
+      const eaten = Math.min(total, Math.floor(total * overlay.progress));
 
-      ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-      ctx.fillRect(px - barWidth / 2 - 2, py - barHeight / 2 - 2, barWidth + 4, barHeight + 4);
+      for (let i = 0; i < eaten; i++) {
+        const idx = overlay.tiles[i];
+        const x = idx % mapWidth;
+        const y = Math.floor(idx / mapWidth);
+        const isFrontier = i >= eaten - FRONTIER_TILE_SPAN;
+        const alpha = isFrontier ? EATEN_ALPHA - 0.15 + pulse * 0.3 : EATEN_ALPHA;
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        ctx.fillRect(offsetX + x * scale, offsetY + y * scale, scale + 0.5, scale + 0.5);
+      }
 
-      ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
-      ctx.fillRect(px - barWidth / 2, py - barHeight / 2, barWidth, barHeight);
-
-      ctx.fillStyle = siege.attackerColor;
-      ctx.fillRect(px - barWidth / 2, py - barHeight / 2, barWidth * fraction, barHeight);
-
-      ctx.fillStyle = "#fff";
-      ctx.font = "10px monospace";
-      ctx.textAlign = "center";
-      ctx.fillText(`${Math.round(siege.garrison)} / ${Math.round(siege.maxGarrison)}`, px, py - barHeight / 2 - 5);
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.35 + pulse * 0.45})`;
+      ctx.lineWidth = Math.max(1, scale * 0.12);
+      for (let i = eaten; i < Math.min(total, eaten + FRONTIER_TILE_SPAN); i++) {
+        const idx = overlay.tiles[i];
+        const x = idx % mapWidth;
+        const y = Math.floor(idx / mapWidth);
+        ctx.strokeRect(offsetX + x * scale + 1, offsetY + y * scale + 1, scale - 1.5, scale - 1.5);
+      }
     }
   }
 
