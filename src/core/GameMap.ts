@@ -33,9 +33,45 @@ export class GameMap {
     return result;
   }
 
+  /** Bir kara tile'ının en az bir su komşusu olup olmadığı (liman inşası için). */
+  isCoastalTile(x: number, y: number): boolean {
+    if (!this.isLand(x, y)) return false;
+    return this.neighbors(x, y).some(([nx, ny]) => !this.isLand(nx, ny));
+  }
+
+  /** Bir tile'a bitişik ilk su tile'ının index'i, yoksa null (gemi rotalarının başlangıç/bitiş noktası). */
+  adjacentWaterTile(x: number, y: number): number | null {
+    for (const [nx, ny] of this.neighbors(x, y)) {
+      if (!this.isLand(nx, ny)) return this.index(nx, ny);
+    }
+    return null;
+  }
+
   /**
-   * Placeholder harita üreticisi: gerçek dünya haritası pipeline'ı (Faz 1)
-   * gelene kadar dairemsi bir ada üretir, sadece uçtan uca akışı doğrulamak için.
+   * `resources/maps/*.json`'dan (bkz. `scripts/build-map.ts`, Faz 8) önceden
+   * üretilmiş bir terrain grid'inden GameMap kurar. Dosya okuma işini bilerek
+   * burada yapmıyoruz — bu dosya client'ta da import edildiği için Node'a
+   * (fs) bağımlı olamaz; JSON'u okumak çağıranın (server) sorumluluğu.
+   */
+  static fromTerrain(width: number, height: number, terrain: ArrayLike<number>): GameMap {
+    const map = new GameMap(width, height);
+    for (let i = 0; i < terrain.length; i++) {
+      map.terrain[i] = terrain[i];
+    }
+
+    let landCount = 0;
+    for (let i = 0; i < map.terrain.length; i++) {
+      if (map.terrain[i] === Terrain.Land) landCount++;
+    }
+    map.landTileCount = landCount;
+
+    return map;
+  }
+
+  /**
+   * Placeholder harita üreticisi: gerçek dünya haritası verisi olmadan hızlı
+   * geliştirme/test için dairemsi bir ada üretir (bkz. `fromTerrain` — asıl
+   * sunucu artık `resources/maps/europe.json`'u kullanıyor, Faz 8).
    */
   static generateIsland(width: number, height: number, seed = 1): GameMap {
     const map = new GameMap(width, height);

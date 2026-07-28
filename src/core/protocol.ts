@@ -43,14 +43,37 @@ export interface RegionOwnerDTO {
   ownerId: number;
 }
 
+export interface TradeShipDTO {
+  id: number;
+  ownerId: number;
+  toOwnerId: number;
+  path: number[];
+  spawnTick: number;
+  speedTilesPerTick: number;
+  goldValue: number;
+}
+
+export interface WarshipDTO {
+  id: number;
+  ownerId: number;
+  hp: number;
+  maxHp: number;
+  state: string;
+  path: number[];
+  pathStartTick: number;
+}
+
 export interface InitMessage {
   type: "init";
   selfId: number;
+  tick: number;
   owner: number[];
   regionOwners: RegionOwnerDTO[];
   players: PlayerStateDTO[];
   buildings: BuildingDTO[];
   sieges: SiegeDTO[];
+  tradeShips: TradeShipDTO[];
+  warships: WarshipDTO[];
 }
 
 export interface TileChangeDTO {
@@ -60,10 +83,14 @@ export interface TileChangeDTO {
 
 export interface TickMessage {
   type: "tick";
+  tick: number;
   changes: TileChangeDTO[];
   players: PlayerStateDTO[];
   buildings: BuildingDTO[];
   sieges: SiegeDTO[];
+  spawnedTradeShips: TradeShipDTO[];
+  arrivedTradeShipIds: number[];
+  warships: WarshipDTO[];
 }
 
 export interface GameOverMessage {
@@ -86,7 +113,7 @@ export interface AttackMessage {
 
 export interface BuildMessage {
   type: "build";
-  buildingType: "city" | "defensePost";
+  buildingType: "city" | "defensePost" | "port";
   tileIndex: number;
 }
 
@@ -94,4 +121,21 @@ export interface CancelAttacksMessage {
   type: "cancelAttacks";
 }
 
-export type ClientMessage = JoinMessage | AttackMessage | BuildMessage | CancelAttacksMessage;
+export interface BuildWarshipMessage {
+  type: "buildWarship";
+  portBuildingId: number;
+}
+
+export interface MoveShipMessage {
+  type: "moveShip";
+  shipId: number;
+  targetTileIndex: number;
+}
+
+export type ClientMessage =
+  | JoinMessage
+  | AttackMessage
+  | BuildMessage
+  | CancelAttacksMessage
+  | BuildWarshipMessage
+  | MoveShipMessage;

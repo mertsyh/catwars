@@ -29,6 +29,28 @@ export const CITY_TROOP_BONUS = 50;
 export const DEFENSE_POST_COST = 200;
 export const DEFENSE_POST_GARRISON_BONUS = 80;
 
+export const PORT_COST_BASE = 450;
+export const PORT_COST_MULTIPLIER = 2;
+export const PORT_COST_CAP = 3600;
+
+export const MAX_TRADE_SHIPS = 12;
+export const TRADE_SHIP_SPAWN_INTERVAL_TICKS = 40;
+export const TRADE_SHIP_SPEED_TILES_PER_TICK = 1.5;
+export const TRADE_SHIP_BASE_GOLD = 15;
+export const TRADE_SHIP_GOLD_PER_TILE = 0.4;
+export const TRADE_SHIP_CAPTURE_BONUS_GOLD = 100;
+
+export const WARSHIP_COST_BASE = 800;
+export const WARSHIP_COST_INCREMENT = 400;
+export const WARSHIP_COST_CAP = 3000;
+export const WARSHIP_BUILD_TICKS = 30;
+export const WARSHIP_MAX_HP = 200;
+export const WARSHIP_DAMAGE_PER_TICK = 20;
+export const WARSHIP_RANGE = 6;
+export const WARSHIP_CAPTURE_RANGE = 3;
+export const WARSHIP_SPEED_TILES_PER_TICK = 1.2;
+export const WARSHIP_RETREAT_HP_FRACTION = 0.3;
+
 export const PLAYER_COLORS = [
   "#e74c3c",
   "#3498db",

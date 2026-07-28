@@ -3,3 +3,8 @@ dist/
 .env
 *.log
 .DS_Store
+
+# Faz 8: ham coğrafya kaynağı (Natural Earth, public domain) — build-time script
+# bundan resources/maps/*.json üretir; ham kaynak commit'lenmez, gerektiğinde
+# `npm run build:maps` yeniden indirir/üretir. Bkz. docs/phases/faz-08-*.md
+resources/geo-source/

@@ -1,8 +1,11 @@
+import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
 import { GameMap } from "../core/GameMap";
 import { GameState, TileChange } from "../core/GameState";
 import { TICK_RATE } from "../core/constants";
+import { TradeShip, Warship } from "../core/types";
 import type {
   BuildingDTO,
   ClientMessage,
@@ -11,16 +14,38 @@ import type {
   RegionOwnerDTO,
   ServerMessage,
   SiegeDTO,
+  TradeShipDTO,
+  WarshipDTO,
 } from "../core/protocol";
 
 const PORT = Number(process.env.PORT ?? 3000);
-const MAP_WIDTH = 400;
-const MAP_HEIGHT = 300;
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
 const BOT_COUNT = 3;
 const BOT_DECISION_INTERVAL_MS = 800;
 
-const map = GameMap.generateIsland(MAP_WIDTH, MAP_HEIGHT, 42);
+interface MapFile {
+  width: number;
+  height: number;
+  terrain: number[];
+}
+
+/**
+ * `resources/maps/<id>.json`'dan (Faz 8, `scripts/build-map.ts` ile üretilir)
+ * gerçek dünya haritasını yükler. Dosya yoksa (ör. `npm run build:maps` hiç
+ * çalıştırılmamışsa) placeholder dairesel adaya düşer — geliştirme sırasında
+ * kesintisiz çalışmaya devam edebilmek için.
+ */
+function loadMap(): GameMap {
+  const mapPath = fileURLToPath(new URL("../../resources/maps/europe.json", import.meta.url));
+  if (!existsSync(mapPath)) {
+    console.warn(`[server] ${mapPath} bulunamadı, placeholder dairesel adaya düşülüyor (npm run build:maps çalıştırın)`);
+    return GameMap.generateIsland(400, 300, 42);
+  }
+  const data = JSON.parse(readFileSync(mapPath, "utf-8")) as MapFile;
+  return GameMap.fromTerrain(data.width, data.height, data.terrain);
+}
+
+const map = loadMap();
 const gameState = new GameState(map);
 const socketPlayerIds = new Map<WebSocket, number>();
 const botIds: number[] = [];
@@ -81,14 +106,42 @@ function toRegionOwnerDTOs(): RegionOwnerDTO[] {
   return gameState.regions.map((r) => ({ id: r.id, ownerId: r.ownerId }));
 }
 
+function toTradeShipDTO(s: TradeShip): TradeShipDTO {
+  return {
+    id: s.id,
+    ownerId: s.ownerId,
+    toOwnerId: s.toOwnerId,
+    path: s.path,
+    spawnTick: s.spawnTick,
+    speedTilesPerTick: s.speedTilesPerTick,
+    goldValue: s.goldValue,
+  };
+}
+
+function toWarshipDTOs(): WarshipDTO[] {
+  return Array.from(gameState.warships.values()).map((s: Warship) => ({
+    id: s.id,
+    ownerId: s.ownerId,
+    hp: Math.round(s.hp),
+    maxHp: s.maxHp,
+    state: s.state,
+    path: s.path,
+    pathStartTick: s.pathStartTick,
+  }));
+}
+
 function broadcastChanges(changes: TileChange[]): void {
   if (changes.length === 0) return;
   broadcast({
     type: "tick",
+    tick: gameState.tick,
     changes: changes.map((c) => ({ i: c.index, o: c.ownerId })),
     players: toDTO(),
     buildings: toBuildingDTOs(),
     sieges: toSiegeDTOs(),
+    spawnedTradeShips: [],
+    arrivedTradeShipIds: [],
+    warships: toWarshipDTOs(),
   });
 }
 
@@ -99,12 +152,19 @@ for (let i = 0; i < BOT_COUNT; i++) {
   broadcastChanges(changes);
 }
 
+const BOT_PORT_BUILD_CHANCE = 0.05;
+
 setInterval(() => {
   for (const botId of botIds) {
     if (!gameState.players.has(botId)) continue;
     const targetRegionId = gameState.getRandomAdjacentRegion(botId);
     if (targetRegionId !== null) {
       gameState.queueAttack(botId, targetRegionId);
+    }
+
+    if (Math.random() < BOT_PORT_BUILD_CHANCE) {
+      const coastTile = gameState.getOwnedCoastalTile(botId);
+      if (coastTile !== null) gameState.buildPort(botId, coastTile);
     }
   }
 }, BOT_DECISION_INTERVAL_MS);
@@ -144,11 +204,14 @@ wss.on("connection", (socket) => {
       send(socket, {
         type: "init",
         selfId: player.id,
+        tick: gameState.tick,
         owner: Array.from(map.owner),
         regionOwners: toRegionOwnerDTOs(),
         players: toDTO(),
         buildings: toBuildingDTOs(),
         sieges: toSiegeDTOs(),
+        tradeShips: Array.from(gameState.tradeShips.values()).map(toTradeShipDTO),
+        warships: toWarshipDTOs(),
       });
       broadcastChanges(changes);
       return;
@@ -166,6 +229,8 @@ wss.on("connection", (socket) => {
       if (playerId !== undefined && Number.isInteger(message.tileIndex)) {
         if (message.buildingType === "defensePost") {
           gameState.buildDefensePost(playerId, message.tileIndex);
+        } else if (message.buildingType === "port") {
+          gameState.buildPort(playerId, message.tileIndex);
         } else {
           gameState.buildCity(playerId, message.tileIndex);
         }
@@ -176,6 +241,20 @@ wss.on("connection", (socket) => {
       const playerId = socketPlayerIds.get(socket);
       if (playerId !== undefined) {
         gameState.cancelAttacks(playerId);
+      }
+    }
+
+    if (message.type === "buildWarship") {
+      const playerId = socketPlayerIds.get(socket);
+      if (playerId !== undefined && Number.isInteger(message.portBuildingId)) {
+        gameState.buildWarship(playerId, message.portBuildingId);
+      }
+    }
+
+    if (message.type === "moveShip") {
+      const playerId = socketPlayerIds.get(socket);
+      if (playerId !== undefined && Number.isInteger(message.shipId) && Number.isInteger(message.targetTileIndex)) {
+        gameState.moveShip(playerId, message.shipId, message.targetTileIndex);
       }
     }
   });
@@ -194,14 +273,18 @@ setInterval(() => {
   if (gameState.players.size === 0) return;
 
   const wasUndecided = gameState.winnerId === null;
-  const changes = gameState.tickOnce();
+  const { changes, spawnedTradeShips, arrivedTradeShipIds } = gameState.tickOnce();
 
   broadcast({
     type: "tick",
+    tick: gameState.tick,
     changes: changes.map((c) => ({ i: c.index, o: c.ownerId })),
     players: toDTO(),
     buildings: toBuildingDTOs(),
     sieges: toSiegeDTOs(),
+    spawnedTradeShips: spawnedTradeShips.map(toTradeShipDTO),
+    arrivedTradeShipIds,
+    warships: toWarshipDTOs(),
   });
 
   if (wasUndecided && gameState.winnerId !== null) {

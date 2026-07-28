@@ -1,3 +1,6 @@
+import { TICK_RATE } from "../core/constants";
+import { positionAlongPath } from "../core/pathfinding";
+
 type RGB = [number, number, number];
 
 const WATER_COLOR: RGB = [14, 42, 74];
@@ -26,6 +29,27 @@ export interface RegionLabel {
   centerY: number;
 }
 
+export interface TradeShipRenderData {
+  id: number;
+  /** Kaynak liman tile'ından hedef limana, aradaki su üzerinden tam tile-index rotası. */
+  path: number[];
+  spawnTick: number;
+  speedTilesPerTick: number;
+  color: string;
+}
+
+export interface WarshipRenderData {
+  id: number;
+  path: number[];
+  pathStartTick: number;
+  speedTilesPerTick: number;
+  hp: number;
+  maxHp: number;
+  state: string;
+  color: string;
+  selected: boolean;
+}
+
 export interface SiegeOverlay {
   attackerColor: string;
   /** Bölge tile'ları, saldırganın sınırından başlayarak "yenilme" sırasına göre dizilmiş. */
@@ -35,7 +59,7 @@ export interface SiegeOverlay {
 }
 
 export type HoverKind = "self" | "valid" | "invalid";
-export type RippleKind = "attack" | "build" | "invalid" | "cancel";
+export type RippleKind = "attack" | "build" | "invalid" | "cancel" | "move";
 
 interface Ripple {
   x: number;
@@ -55,6 +79,7 @@ const RIPPLE_COLORS: Record<RippleKind, string> = {
   build: "255, 224, 102",
   invalid: "150, 150, 150",
   cancel: "224, 224, 224",
+  move: "79, 163, 255",
 };
 
 const EATEN_ALPHA = 0.6;
@@ -88,6 +113,10 @@ export class MapRenderer {
   private hoverKind: HoverKind = "invalid";
   private ripples: Ripple[] = [];
   private rafId: number | null = null;
+  private tradeShips: TradeShipRenderData[] = [];
+  private warships: WarshipRenderData[] = [];
+  private syncTick = 0;
+  private syncTimestamp = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d");
@@ -135,6 +164,25 @@ export class MapRenderer {
 
   setSiegeOverlays(overlays: SiegeOverlay[]): void {
     this.siegeOverlays = overlays;
+  }
+
+  setTradeShips(ships: TradeShipRenderData[]): void {
+    this.tradeShips = ships;
+  }
+
+  setWarships(ships: WarshipRenderData[]): void {
+    this.warships = ships;
+  }
+
+  /** Sunucudan bir tick/init mesajı geldiğinde, gemi pozisyonlarını gerçek zamanda interpole edebilmek için kalibrasyon noktası. */
+  setServerTimeSync(tick: number): void {
+    this.syncTick = tick;
+    this.syncTimestamp = performance.now();
+  }
+
+  /** Şu anki gerçek zamana göre tahmini sunucu tick'i — main.ts'in savaş gemisi seçim hit-test'i için. */
+  getEstimatedTick(): number {
+    return this.syncTick + ((performance.now() - this.syncTimestamp) / 1000) * TICK_RATE;
   }
 
   setHoverRegion(tiles: number[], kind: HoverKind): void {
@@ -213,6 +261,8 @@ export class MapRenderer {
     this.drawBuildingMarkers(scale, offsetX, offsetY);
     this.drawHoverRegion(scale, offsetX, offsetY);
     this.drawSiegeOverlays(scale, offsetX, offsetY);
+    this.drawTradeShips(scale, offsetX, offsetY);
+    this.drawWarships(scale, offsetX, offsetY);
     this.drawRegionLabels(scale, offsetX, offsetY);
     this.drawRipples(scale, offsetX, offsetY);
   }
@@ -253,6 +303,15 @@ export class MapRenderer {
         ctx.fillStyle = "#b0bec5";
         ctx.fillRect(px - radius, py - radius, radius * 2, radius * 2);
         ctx.strokeRect(px - radius, py - radius, radius * 2, radius * 2);
+      } else if (marker.type === "port") {
+        ctx.fillStyle = "#4fa3ff";
+        ctx.beginPath();
+        ctx.moveTo(px, py - radius);
+        ctx.lineTo(px + radius, py + radius);
+        ctx.lineTo(px - radius, py + radius);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
       } else {
         ctx.fillStyle = "#ffe066";
         ctx.beginPath();
@@ -260,6 +319,75 @@ export class MapRenderer {
         ctx.fill();
         ctx.stroke();
       }
+    }
+  }
+
+  /**
+   * Gemi pozisyonu sunucudan her tick alınmaz — doğuşta gelen path/spawnTick/
+   * hız bilgisinden, en son senkronize edilen tick + geçen gerçek zamana göre
+   * lokal olarak interpole edilir (bkz. setServerTimeSync, positionAlongPath).
+   */
+  private drawTradeShips(scale: number, offsetX: number, offsetY: number): void {
+    if (this.tradeShips.length === 0) return;
+    const { ctx, mapWidth } = this;
+    const estimatedTick = this.getEstimatedTick();
+    const radius = Math.max(1.5, scale * 0.28);
+
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+    ctx.lineWidth = 1;
+
+    for (const ship of this.tradeShips) {
+      if (ship.path.length <= 1) continue;
+      const pos = positionAlongPath(ship.path, mapWidth, ship.spawnTick, ship.speedTilesPerTick, estimatedTick);
+
+      ctx.fillStyle = ship.color;
+      ctx.beginPath();
+      ctx.arc(offsetX + (pos.x + 0.5) * scale, offsetY + (pos.y + 0.5) * scale, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  /** Savaş gemileri: yön göstermeden basit daire + üstünde HP çubuğu; seçiliyse beyaz halka, inşa halindeyken soluk. */
+  private drawWarships(scale: number, offsetX: number, offsetY: number): void {
+    if (this.warships.length === 0) return;
+    const { ctx, mapWidth } = this;
+    const estimatedTick = this.getEstimatedTick();
+    const radius = Math.max(2, scale * 0.32);
+
+    for (const ship of this.warships) {
+      const pos = positionAlongPath(ship.path, mapWidth, ship.pathStartTick, ship.speedTilesPerTick, estimatedTick);
+      const px = offsetX + (pos.x + 0.5) * scale;
+      const py = offsetY + (pos.y + 0.5) * scale;
+      const building = ship.state === "building";
+
+      ctx.globalAlpha = building ? 0.5 : 1;
+
+      ctx.fillStyle = ship.color;
+      ctx.strokeStyle = ship.state === "returning" ? "rgba(255, 224, 102, 0.9)" : "rgba(0, 0, 0, 0.5)";
+      ctx.lineWidth = Math.max(1, scale * 0.1);
+      ctx.beginPath();
+      ctx.arc(px, py, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      if (ship.selected) {
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+        ctx.lineWidth = Math.max(1, scale * 0.08);
+        ctx.beginPath();
+        ctx.arc(px, py, radius + scale * 0.18, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      const barWidth = radius * 2.2;
+      const barY = py - radius - scale * 0.22;
+      const hpFraction = Math.max(0, Math.min(1, ship.hp / ship.maxHp));
+      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.fillRect(px - barWidth / 2, barY, barWidth, scale * 0.1);
+      ctx.fillStyle = hpFraction > 0.5 ? "#6fcf6f" : hpFraction > 0.25 ? "#e8c547" : "#e05c5c";
+      ctx.fillRect(px - barWidth / 2, barY, barWidth * hpFraction, scale * 0.1);
+
+      ctx.globalAlpha = 1;
     }
   }
 

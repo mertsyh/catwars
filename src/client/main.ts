@@ -1,3 +1,5 @@
+import { WARSHIP_SPEED_TILES_PER_TICK } from "../core/constants";
+import { positionAlongPath } from "../core/pathfinding";
 import type {
   BuildingDTO,
   GameOverMessage,
@@ -7,6 +9,8 @@ import type {
   ServerMessage,
   SiegeDTO,
   TickMessage,
+  TradeShipDTO,
+  WarshipDTO,
 } from "../core/protocol";
 import { hexToRgb, LAND_COLOR, MapRenderer } from "./renderer";
 import type { HoverKind } from "./renderer";
@@ -15,6 +19,7 @@ const SPAWN_ZOOM = 6;
 const DRAG_THRESHOLD = 4;
 const ZOOM_IN_FACTOR = 1.15;
 const ZOOM_OUT_FACTOR = 1 / 1.15;
+const SHIP_SELECT_RADIUS = 1.5;
 
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const panelEl = document.getElementById("panel") as HTMLDivElement;
@@ -22,6 +27,8 @@ const bannerEl = document.getElementById("banner") as HTMLDivElement;
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const cityBtn = document.getElementById("btn-city") as HTMLButtonElement;
 const defenseBtn = document.getElementById("btn-defense") as HTMLButtonElement;
+const portBtn = document.getElementById("btn-port") as HTMLButtonElement;
+const warshipBtn = document.getElementById("btn-warship") as HTMLButtonElement;
 
 function resize(): void {
   canvas.width = window.innerWidth;
@@ -35,16 +42,20 @@ resize();
 let selfId: number | null = null;
 let players = new Map<number, PlayerStateDTO>();
 let buildings = new Map<number, BuildingDTO>();
+let tradeShips = new Map<number, TradeShipDTO>();
+let warships = new Map<number, WarshipDTO>();
+let selectedWarshipId: number | null = null;
 let mapWidth = 0;
 let mapHeight = 0;
 let ownerByTile: Int32Array = new Int32Array(0);
 let regionOf: Int32Array = new Int32Array(0);
 let isBorderTile: Uint8Array = new Uint8Array(0);
+let coastalTile: Uint8Array = new Uint8Array(0);
 let tilesByRegion: number[][] = [];
 let regionNeighbors = new Map<number, number[]>();
 let regionOwner = new Map<number, number>();
 let hasCenteredOnSpawn = false;
-let armedBuilding: "city" | "defensePost" | null = null;
+let armedBuilding: "city" | "defensePost" | "port" | "warship" | null = null;
 
 const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
 const ws = new WebSocket(`${wsProtocol}//${location.host}/ws`);
@@ -89,6 +100,7 @@ function handleMap(msg: MapMessage): void {
   regionNeighbors = new Map(msg.regions.map((r) => [r.id, r.neighbors]));
 
   isBorderTile = computeBorderTiles(msg.width, msg.height, regionOf);
+  coastalTile = computeCoastalTiles(msg.width, msg.height, msg.terrain);
   tilesByRegion = groupTilesByRegion(regionOf, msg.regions.length);
 
   renderer.initTerrain(msg.width, msg.height, msg.terrain, isBorderTile);
@@ -112,6 +124,24 @@ function computeBorderTiles(width: number, height: number, regionOfTile: Int32Ar
     }
   }
   return border;
+}
+
+/** Bir kara tile'ının en az bir su komşusu olup olmadığını işaretler (liman yerleşimi için hover/tık doğrulaması). */
+function computeCoastalTiles(width: number, height: number, terrain: ArrayLike<number>): Uint8Array {
+  const coastal = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      if (terrain[idx] !== 1) continue;
+      const isCoast =
+        (x > 0 && terrain[idx - 1] !== 1) ||
+        (x < width - 1 && terrain[idx + 1] !== 1) ||
+        (y > 0 && terrain[idx - width] !== 1) ||
+        (y < height - 1 && terrain[idx + width] !== 1);
+      if (isCoast) coastal[idx] = 1;
+    }
+  }
+  return coastal;
 }
 
 function groupTilesByRegion(regionOfTile: Int32Array, regionCount: number): number[][] {
@@ -138,6 +168,12 @@ function handleInit(msg: InitMessage): void {
   regionOwner = new Map(msg.regionOwners.map((r) => [r.id, r.ownerId]));
   updateSieges(msg.sieges);
 
+  tradeShips = new Map(msg.tradeShips.map((s) => [s.id, s]));
+  warships = new Map(msg.warships.map((s) => [s.id, s]));
+  renderer.setServerTimeSync(msg.tick);
+  updateTradeShipRenderer();
+  updateWarshipRenderer();
+
   if (!hasCenteredOnSpawn) {
     centerCameraOnSelf();
     hasCenteredOnSpawn = true;
@@ -157,7 +193,75 @@ function handleTick(msg: TickMessage): void {
     const player = change.o === -1 ? null : players.get(change.o);
     renderer.setOwnership(change.i, player ? hexToRgb(player.color) : LAND_COLOR);
   }
+
+  for (const ship of msg.spawnedTradeShips) tradeShips.set(ship.id, ship);
+  for (const id of msg.arrivedTradeShipIds) tradeShips.delete(id);
+  warships = new Map(msg.warships.map((s) => [s.id, s]));
+  if (selectedWarshipId !== null && !warships.has(selectedWarshipId)) selectedWarshipId = null;
+  renderer.setServerTimeSync(msg.tick);
+  updateTradeShipRenderer();
+  updateWarshipRenderer();
+
   renderPanel();
+}
+
+function updateTradeShipRenderer(): void {
+  renderer.setTradeShips(
+    Array.from(tradeShips.values()).map((s) => ({
+      id: s.id,
+      path: s.path,
+      spawnTick: s.spawnTick,
+      speedTilesPerTick: s.speedTilesPerTick,
+      color: players.get(s.ownerId)?.color ?? "#ffffff",
+    })),
+  );
+}
+
+function updateWarshipRenderer(): void {
+  renderer.setWarships(
+    Array.from(warships.values()).map((s) => ({
+      id: s.id,
+      path: s.path,
+      pathStartTick: s.pathStartTick,
+      speedTilesPerTick: WARSHIP_SPEED_TILES_PER_TICK,
+      hp: s.hp,
+      maxHp: s.maxHp,
+      state: s.state,
+      color: players.get(s.ownerId)?.color ?? "#ffffff",
+      selected: s.id === selectedWarshipId,
+    })),
+  );
+}
+
+/** Tıklanan dünya koordinatına en yakın, kendi savaş gemimizi bulur (seçim hit-test'i). */
+function findOwnWarshipNear(worldX: number, worldY: number): number | null {
+  if (selfId === null) return null;
+  const estimatedTick = renderer.getEstimatedTick();
+  let bestId: number | null = null;
+  let bestDistSq = SHIP_SELECT_RADIUS * SHIP_SELECT_RADIUS;
+
+  for (const ship of warships.values()) {
+    if (ship.ownerId !== selfId) continue;
+    const pos = positionAlongPath(ship.path, mapWidth, ship.pathStartTick, WARSHIP_SPEED_TILES_PER_TICK, estimatedTick);
+    const dx = pos.x + 0.5 - worldX;
+    const dy = pos.y + 0.5 - worldY;
+    const distSq = dx * dx + dy * dy;
+    if (distSq < bestDistSq) {
+      bestDistSq = distSq;
+      bestId = ship.id;
+    }
+  }
+  return bestId;
+}
+
+function findOwnPortAtTile(tileIndex: number): BuildingDTO | null {
+  if (selfId === null) return null;
+  for (const building of buildings.values()) {
+    if (building.tileIndex === tileIndex && building.type === "port" && building.ownerId === selfId) {
+      return building;
+    }
+  }
+  return null;
 }
 
 function handleGameOver(msg: GameOverMessage): void {
@@ -308,7 +412,11 @@ function updateHover(clientX: number, clientY: number): void {
   }
 
   let kind: HoverKind;
-  if (regionOwner.get(regionId) === selfId) {
+  const isOwn = regionOwner.get(regionId) === selfId;
+  if (armedBuilding) {
+    const validTile = isOwn && (armedBuilding !== "port" || coastalTile[tileIndex] === 1);
+    kind = validTile ? "self" : "invalid";
+  } else if (isOwn) {
     kind = "self";
   } else {
     kind = isRegionAdjacentToSelf(regionId) ? "valid" : "invalid";
@@ -318,22 +426,66 @@ function updateHover(clientX: number, clientY: number): void {
   renderer.setHoverRegion(borderOfRegion, kind);
 }
 
-function setArmedBuilding(type: "city" | "defensePost" | null): void {
+function setArmedBuilding(type: "city" | "defensePost" | "port" | "warship" | null): void {
   armedBuilding = type;
   cityBtn.classList.toggle("active", type === "city");
   defenseBtn.classList.toggle("active", type === "defensePost");
+  portBtn.classList.toggle("active", type === "port");
+  warshipBtn.classList.toggle("active", type === "warship");
+}
+
+function setSelectedWarship(id: number | null): void {
+  selectedWarshipId = id;
+  updateWarshipRenderer();
 }
 
 function handleClick(clientX: number, clientY: number): void {
   if (selfId === null) return;
   const tileIndex = renderer.screenToTileIndex(clientX, clientY);
   if (tileIndex === null) return;
-  const regionId = regionOf[tileIndex];
-  if (regionId === -1) return;
   const world = renderer.screenToWorld(clientX, clientY);
 
+  // Bir gemi seçiliyken herhangi bir yere tıklamak, suysa hareket emri verir.
+  if (selectedWarshipId !== null) {
+    const shipId = selectedWarshipId;
+    setSelectedWarship(null);
+    if (regionOf[tileIndex] === -1) {
+      renderer.addRipple(world.x, world.y, "move");
+      ws.send(JSON.stringify({ type: "moveShip", shipId, targetTileIndex: tileIndex }));
+    } else {
+      renderer.addRipple(world.x, world.y, "invalid");
+    }
+    return;
+  }
+
+  // Kendi gemimize tıklamak (bina/saldırı modunda değilken) onu seçer.
+  if (!armedBuilding) {
+    const clickedShipId = findOwnWarshipNear(world.x, world.y);
+    if (clickedShipId !== null) {
+      setSelectedWarship(clickedShipId);
+      return;
+    }
+  }
+
+  const regionId = regionOf[tileIndex];
+  if (regionId === -1) return;
+
+  if (armedBuilding === "warship") {
+    const port = findOwnPortAtTile(tileIndex);
+    if (port) {
+      renderer.addRipple(world.x, world.y, "build");
+      ws.send(JSON.stringify({ type: "buildWarship", portBuildingId: port.id }));
+    } else {
+      renderer.addRipple(world.x, world.y, "invalid");
+    }
+    setArmedBuilding(null);
+    return;
+  }
+
   if (armedBuilding) {
-    if (regionOwner.get(regionId) === selfId) {
+    const valid =
+      regionOwner.get(regionId) === selfId && (armedBuilding !== "port" || coastalTile[tileIndex] === 1);
+    if (valid) {
       renderer.addRipple(world.x, world.y, "build");
       ws.send(JSON.stringify({ type: "build", buildingType: armedBuilding, tileIndex }));
     } else {
@@ -353,6 +505,12 @@ cityBtn.addEventListener("click", () => {
 });
 defenseBtn.addEventListener("click", () => {
   setArmedBuilding(armedBuilding === "defensePost" ? null : "defensePost");
+});
+portBtn.addEventListener("click", () => {
+  setArmedBuilding(armedBuilding === "port" ? null : "port");
+});
+warshipBtn.addEventListener("click", () => {
+  setArmedBuilding(armedBuilding === "warship" ? null : "warship");
 });
 
 let dragging = false;
@@ -376,6 +534,10 @@ canvas.addEventListener("contextmenu", (event) => {
   if (selfId === null) return;
   const world = renderer.screenToWorld(event.clientX, event.clientY);
   renderer.addRipple(world.x, world.y, "cancel");
+  if (selectedWarshipId !== null) {
+    setSelectedWarship(null);
+    return;
+  }
   ws.send(JSON.stringify({ type: "cancelAttacks" }));
 });
 

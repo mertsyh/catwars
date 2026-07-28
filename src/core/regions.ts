@@ -12,6 +12,8 @@ export interface Region {
   ownerId: number;
   garrison: number;
   maxGarrison: number;
+  /** En az bir tile'ı suya bitişikse true — liman inşasına uygun bölgeleri bulmak için (bot AI). */
+  isCoastal: boolean;
 }
 
 /**
@@ -68,6 +70,7 @@ export function generateRegions(map: GameMap, count: number): Region[] {
     ownerId: -1,
     garrison: 0,
     maxGarrison: 0,
+    isCoastal: false,
   }));
 
   const sumX = new Float64Array(regionCount);
@@ -84,7 +87,12 @@ export function generateRegions(map: GameMap, count: number): Region[] {
       sumY[rid] += y;
 
       for (const [nx, ny] of map.neighbors(x, y)) {
-        const nRid = regionOf[map.index(nx, ny)];
+        const nIdx = map.index(nx, ny);
+        if (terrain[nIdx] !== Terrain.Land) {
+          regions[rid].isCoastal = true;
+          continue;
+        }
+        const nRid = regionOf[nIdx];
         if (nRid !== -1 && nRid !== rid) {
           regions[rid].neighbors.add(nRid);
         }
