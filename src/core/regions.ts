@@ -9,9 +9,8 @@ export interface Region {
   neighbors: Set<number>;
   centerX: number;
   centerY: number;
+  /** Bölgedeki tile'ların ÇOĞUNLUĞUNUN sahibi (Faz: orantılı parçalı alım) — bölge artık birden fazla oyuncu arasında bölünebilir, bu sadece kaba bir "kimin sayılır" göstergesi. */
   ownerId: number;
-  garrison: number;
-  maxGarrison: number;
   /** En az bir tile'ı suya bitişikse true — liman inşasına uygun bölgeleri bulmak için (bot AI). */
   isCoastal: boolean;
 }
@@ -68,8 +67,6 @@ export function generateRegions(map: GameMap, count: number): Region[] {
     centerX: 0,
     centerY: 0,
     ownerId: -1,
-    garrison: 0,
-    maxGarrison: 0,
     isCoastal: false,
   }));
 

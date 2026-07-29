@@ -32,7 +32,7 @@ Not: Faz 12'ye kadar hâlâ "tek sürekli açık oyun" mimarisi korunuyor (bkz. 
 ## Yapılacaklar (checklist)
 
 - [x] `scripts/build-map.ts`'i çoklu harita üretecek şekilde genelleştir (bbox/isim parametreleri) — `src/core/maps.ts`'teki `WORLD_MAP_SPECS`'i döngüyle işliyor.
-- [x] En az 3-4 harita üret: 1-2 gerçek dünya bölgesi (Faz 8) + mevcut `generateIsland()`'ı "Rastgele Ada" olarak kayıtta tut — Avrupa, Afrika, Kuzey Amerika + Rastgele Ada (4 harita).
+- [x] En az 3-4 harita üret: 1-2 gerçek dünya bölgesi (Faz 8) + mevcut `generateIsland()`'ı "Rastgele Ada" olarak kayıtta tut — Avrupa, Afrika, Kuzey Amerika, Dünya + Rastgele Ada (5 harita; "Dünya" kullanıcı isteğiyle sonradan eklendi).
 - [x] `src/core/maps.ts`: `MAP_REGISTRY`
 - [x] `protocol.ts`: `JoinMessage.mapId`
 - [x] `client/index.html` + `main.ts`: bağlanmadan önce basit bir harita seçim dropdown'ı (isim listesi `MAP_REGISTRY`'den)
@@ -45,6 +45,8 @@ Not: Faz 12'ye kadar hâlâ "tek sürekli açık oyun" mimarisi korunuyor (bkz. 
 - [x] Var olan tüm mekanikler (kuşatma, liman, gemi) her haritada değişikliksiz çalışıyor — kuşatma/saldırı tarayıcıda Afrika haritasında test edildi, `GameState`/`pathfinding` harita boyutundan bağımsız.
 
 **Tamamlandı** (bkz. [PROGRESS.md](../../PROGRESS.md) → "Faz 9 — Çoklu Harita Desteği").
+
+**Takip düzeltmesi:** ilk sürümde Afrika/Kuzey Amerika bbox'ları kıtayı çerçeveye çok sıkı oturtuyordu ve `renderer.ts`'teki kamera kırpması zoom'u hesaba katmıyordu — birlikte, kıyıya yakın bir bölgeye yakınlaşınca ekranın bir kısmının haritanın dışına (siyah alana) taşmasına yol açıyordu. Kamera kırpması düzeltildi (artık geçerli zoom'daki görünür alanı hesaba katıyor), kıta bbox'larına boşluk eklendi, ve kullanıcının talebi üzerine "Dünya" (tüm gezegen) haritası eklendi.
 
 ## Açık sorular / riskler
 

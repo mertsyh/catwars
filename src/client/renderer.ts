@@ -4,8 +4,11 @@ import { positionAlongPath } from "../core/pathfinding";
 type RGB = [number, number, number];
 
 const WATER_COLOR: RGB = [14, 42, 74];
+const SHALLOW_WATER_COLOR: RGB = [72, 132, 168];
 export const LAND_COLOR: RGB = [47, 82, 51];
 const BORDER_DARKEN = 0.72;
+/** Kıyıdan bu kadar tile uzağa kadar su, derin su rengine doğru gradyanla geçer. */
+const MAX_COAST_DIST = 3;
 
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 30;
@@ -50,14 +53,6 @@ export interface WarshipRenderData {
   selected: boolean;
 }
 
-export interface SiegeOverlay {
-  attackerColor: string;
-  /** Bölge tile'ları, saldırganın sınırından başlayarak "yenilme" sırasına göre dizilmiş. */
-  tiles: number[];
-  /** 0..1 — kuşatmanın ne kadarının tamamlandığı (garrison ne kadar azaldı). */
-  progress: number;
-}
-
 export type HoverKind = "self" | "valid" | "invalid";
 export type RippleKind = "attack" | "build" | "invalid" | "cancel" | "move";
 
@@ -82,10 +77,6 @@ const RIPPLE_COLORS: Record<RippleKind, string> = {
   move: "79, 163, 255",
 };
 
-const EATEN_ALPHA = 0.6;
-const FRONTIER_TILE_SPAN = 3;
-const FRONTIER_PULSE_PERIOD_MS = 220;
-
 const HOVER_COLORS: Record<HoverKind, string> = {
   self: "255, 255, 255",
   valid: "120, 220, 120",
@@ -108,7 +99,6 @@ export class MapRenderer {
 
   private buildingMarkers: BuildingMarker[] = [];
   private regionLabels: RegionLabel[] = [];
-  private siegeOverlays: SiegeOverlay[] = [];
   private hoverTiles: number[] = [];
   private hoverKind: HoverKind = "invalid";
   private ripples: Ripple[] = [];
@@ -139,13 +129,72 @@ export class MapRenderer {
     this.camY = height / 2;
     this.zoom = MIN_ZOOM;
 
+    const coastDist = this.computeCoastDistance(width, height, terrain, MAX_COAST_DIST);
     const imageData = this.offCtx.createImageData(width, height);
     for (let i = 0; i < width * height; i++) {
-      this.writePixel(imageData, i, terrain[i] === 1 ? LAND_COLOR : WATER_COLOR);
+      if (terrain[i] === 1) {
+        this.writePixel(imageData, i, LAND_COLOR);
+      } else {
+        const d = coastDist[i];
+        const shallowness = d <= MAX_COAST_DIST ? 1 - (d - 1) / MAX_COAST_DIST : 0;
+        this.writePixel(imageData, i, this.lerpColor(WATER_COLOR, SHALLOW_WATER_COLOR, shallowness));
+      }
     }
     this.imageData = imageData;
     this.imageDirty = true;
     this.start();
+  }
+
+  /**
+   * Multi-source BFS: her kara tile'ından su yönüne doğru yayılan bir mesafe haritası.
+   * Su tile'ları için sonuç 1 (karaya bitişik) .. maxDist+1 ("uzak"/derin su) arası;
+   * kara tile'ları 0. Yayılma maxDist adımda durduğu için (kara/su oranından bağımsız
+   * olarak) büyük haritalarda bile maliyeti kıyı uzunluğuyla orantılı kalır.
+   */
+  private computeCoastDistance(width: number, height: number, terrain: ArrayLike<number>, maxDist: number): Uint8Array {
+    const n = width * height;
+    const far = maxDist + 1;
+    const dist = new Uint8Array(n).fill(far);
+    const queue = new Int32Array(n);
+    let qHead = 0;
+    let qTail = 0;
+
+    for (let i = 0; i < n; i++) {
+      if (terrain[i] === 1) {
+        dist[i] = 0;
+        queue[qTail++] = i;
+      }
+    }
+
+    while (qHead < qTail) {
+      const idx = queue[qHead++];
+      const d = dist[idx];
+      if (d >= maxDist) continue;
+      const x = idx % width;
+      const nd = d + 1;
+      if (x > 0 && dist[idx - 1] > nd) {
+        dist[idx - 1] = nd;
+        queue[qTail++] = idx - 1;
+      }
+      if (x < width - 1 && dist[idx + 1] > nd) {
+        dist[idx + 1] = nd;
+        queue[qTail++] = idx + 1;
+      }
+      if (idx - width >= 0 && dist[idx - width] > nd) {
+        dist[idx - width] = nd;
+        queue[qTail++] = idx - width;
+      }
+      if (idx + width < n && dist[idx + width] > nd) {
+        dist[idx + width] = nd;
+        queue[qTail++] = idx + width;
+      }
+    }
+
+    return dist;
+  }
+
+  private lerpColor(a: RGB, b: RGB, t: number): RGB {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
   }
 
   setOwnership(index: number, color: RGB): void {
@@ -160,10 +209,6 @@ export class MapRenderer {
 
   setRegionLabels(regions: RegionLabel[]): void {
     this.regionLabels = regions;
-  }
-
-  setSiegeOverlays(overlays: SiegeOverlay[]): void {
-    this.siegeOverlays = overlays;
   }
 
   setTradeShips(ships: TradeShipRenderData[]): void {
@@ -260,7 +305,6 @@ export class MapRenderer {
 
     this.drawBuildingMarkers(scale, offsetX, offsetY);
     this.drawHoverRegion(scale, offsetX, offsetY);
-    this.drawSiegeOverlays(scale, offsetX, offsetY);
     this.drawTradeShips(scale, offsetX, offsetY);
     this.drawWarships(scale, offsetX, offsetY);
     this.drawRegionLabels(scale, offsetX, offsetY);
@@ -280,9 +324,27 @@ export class MapRenderer {
     return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom));
   }
 
+  /**
+   * Kamerayı harita sınırlarına kırpar — ama sadece 0..width aralığına değil.
+   * Geçerli zoom'da görünür alan (canvas boyutu / scale) haritadan darsa,
+   * kamera merkezini harita kenarından en az yarım-viewport içeride tutar;
+   * böylece ekranın bir kısmı haritanın dışına (siyah arka plana) taşmaz.
+   * Görünür alan haritadan genişse (ör. zoom=1'de en/boy oranı uyuşmuyorsa)
+   * o eksende ortalanır — bu durumda letterbox bar'ları beklenen davranıştır.
+   */
   private clampCamera(): void {
-    this.camX = Math.max(0, Math.min(this.mapWidth, this.camX));
-    this.camY = Math.max(0, Math.min(this.mapHeight, this.camY));
+    const { scale } = this.getTransform();
+    const halfViewW = this.canvas.width / (2 * scale);
+    const halfViewH = this.canvas.height / (2 * scale);
+
+    this.camX =
+      halfViewW * 2 > this.mapWidth
+        ? this.mapWidth / 2
+        : Math.max(halfViewW, Math.min(this.mapWidth - halfViewW, this.camX));
+    this.camY =
+      halfViewH * 2 > this.mapHeight
+        ? this.mapHeight / 2
+        : Math.max(halfViewH, Math.min(this.mapHeight - halfViewH, this.camY));
   }
 
   private drawBuildingMarkers(scale: number, offsetX: number, offsetY: number): void {
@@ -401,45 +463,6 @@ export class MapRenderer {
       const x = idx % mapWidth;
       const y = Math.floor(idx / mapWidth);
       ctx.fillRect(offsetX + x * scale, offsetY + y * scale, scale + 0.5, scale + 0.5);
-    }
-  }
-
-  /**
-   * Kuşatma ilerlemesini bölgenin üstünde bir sayı/bar olarak değil, doğrudan
-   * tile'ların üzerinde saldırganın renginin "yemesi" gibi gösterir: tiles[]
-   * saldırgana en yakın sınırdan başlayan sırayla dizilmiştir (main.ts'te
-   * hesaplanır), progress kadarı yenilmiş sayılır. Yenilecek sıradaki birkaç
-   * tile nabız gibi vurgulanır (ısırık efekti).
-   */
-  private drawSiegeOverlays(scale: number, offsetX: number, offsetY: number): void {
-    if (this.siegeOverlays.length === 0) return;
-    const { ctx, mapWidth } = this;
-    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / FRONTIER_PULSE_PERIOD_MS);
-
-    for (const overlay of this.siegeOverlays) {
-      const total = overlay.tiles.length;
-      if (total === 0) continue;
-      const [r, g, b] = hexToRgb(overlay.attackerColor);
-      const eaten = Math.min(total, Math.floor(total * overlay.progress));
-
-      for (let i = 0; i < eaten; i++) {
-        const idx = overlay.tiles[i];
-        const x = idx % mapWidth;
-        const y = Math.floor(idx / mapWidth);
-        const isFrontier = i >= eaten - FRONTIER_TILE_SPAN;
-        const alpha = isFrontier ? EATEN_ALPHA - 0.15 + pulse * 0.3 : EATEN_ALPHA;
-        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${alpha})`;
-        ctx.fillRect(offsetX + x * scale, offsetY + y * scale, scale + 0.5, scale + 0.5);
-      }
-
-      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.35 + pulse * 0.45})`;
-      ctx.lineWidth = Math.max(1, scale * 0.12);
-      for (let i = eaten; i < Math.min(total, eaten + FRONTIER_TILE_SPAN); i++) {
-        const idx = overlay.tiles[i];
-        const x = idx % mapWidth;
-        const y = Math.floor(idx / mapWidth);
-        ctx.strokeRect(offsetX + x * scale + 1, offsetY + y * scale + 1, scale - 1.5, scale - 1.5);
-      }
     }
   }
 

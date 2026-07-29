@@ -8,7 +8,6 @@ import type {
   MapMessage,
   PlayerStateDTO,
   ServerMessage,
-  SiegeDTO,
   TickMessage,
   TradeShipDTO,
   WarshipDTO,
@@ -50,14 +49,12 @@ let tradeShips = new Map<number, TradeShipDTO>();
 let warships = new Map<number, WarshipDTO>();
 let selectedWarshipId: number | null = null;
 let mapWidth = 0;
-let mapHeight = 0;
 let ownerByTile: Int32Array = new Int32Array(0);
 let regionOf: Int32Array = new Int32Array(0);
 let isBorderTile: Uint8Array = new Uint8Array(0);
 let coastalTile: Uint8Array = new Uint8Array(0);
 let tilesByRegion: number[][] = [];
 let regionNeighbors = new Map<number, number[]>();
-let regionOwner = new Map<number, number>();
 let hasCenteredOnSpawn = false;
 let armedBuilding: "city" | "defensePost" | "port" | "warship" | null = null;
 
@@ -116,7 +113,6 @@ startBtnEl.addEventListener("click", () => startGame(mapSelectEl.value));
 
 function handleMap(msg: MapMessage): void {
   mapWidth = msg.width;
-  mapHeight = msg.height;
   ownerByTile = new Int32Array(msg.width * msg.height).fill(-1);
   regionOf = Int32Array.from(msg.regionOf);
   regionNeighbors = new Map(msg.regions.map((r) => [r.id, r.neighbors]));
@@ -187,9 +183,6 @@ function handleInit(msg: InitMessage): void {
       if (player) renderer.setOwnership(i, hexToRgb(player.color));
     }
   }
-  regionOwner = new Map(msg.regionOwners.map((r) => [r.id, r.ownerId]));
-  updateSieges(msg.sieges);
-
   tradeShips = new Map(msg.tradeShips.map((s) => [s.id, s]));
   warships = new Map(msg.warships.map((s) => [s.id, s]));
   renderer.setServerTimeSync(msg.tick);
@@ -206,12 +199,9 @@ function handleInit(msg: InitMessage): void {
 function handleTick(msg: TickMessage): void {
   updatePlayers(msg.players);
   updateBuildings(msg.buildings);
-  updateSieges(msg.sieges);
 
   for (const change of msg.changes) {
     ownerByTile[change.i] = change.o;
-    const rid = regionOf[change.i];
-    if (rid !== -1) regionOwner.set(rid, change.o);
     const player = change.o === -1 ? null : players.get(change.o);
     renderer.setOwnership(change.i, player ? hexToRgb(player.color) : LAND_COLOR);
   }
@@ -303,75 +293,6 @@ function updateBuildings(list: BuildingDTO[]): void {
   );
 }
 
-const eatOrderCache = new Map<string, number[]>();
-
-/**
- * Bir bölgenin tile'larını, saldırganın toprağına komşu sınırdan başlayıp
- * BFS ile içeri doğru yayılan sırayla döndürür — kuşatma ilerledikçe
- * "yenilen" alanın saldırgan yönünden içeri doğru büyümesi için.
- */
-function computeEatOrder(regionId: number, attackerId: number): number[] {
-  const tiles = tilesByRegion[regionId] ?? [];
-  if (tiles.length === 0) return [];
-  const tileSet = new Set(tiles);
-
-  const neighborsOf = (idx: number): number[] => {
-    const x = idx % mapWidth;
-    const y = Math.floor(idx / mapWidth);
-    const out: number[] = [];
-    if (x > 0) out.push(idx - 1);
-    if (x < mapWidth - 1) out.push(idx + 1);
-    if (y > 0) out.push(idx - mapWidth);
-    if (y < mapHeight - 1) out.push(idx + mapWidth);
-    return out;
-  };
-
-  const frontier: number[] = [];
-  for (const idx of tiles) {
-    if (!isBorderTile[idx]) continue;
-    if (neighborsOf(idx).some((n) => ownerByTile[n] === attackerId)) frontier.push(idx);
-  }
-  if (frontier.length === 0) frontier.push(tiles[0]);
-
-  const visited = new Set(frontier);
-  const order = [...frontier];
-  for (let head = 0; head < order.length; head++) {
-    for (const n of neighborsOf(order[head])) {
-      if (tileSet.has(n) && !visited.has(n)) {
-        visited.add(n);
-        order.push(n);
-      }
-    }
-  }
-  return order;
-}
-
-function updateSieges(list: SiegeDTO[]): void {
-  const activeKeys = new Set<string>();
-
-  const overlays = list.map((s) => {
-    const key = `${s.regionId}:${s.attackerId}`;
-    activeKeys.add(key);
-    let tiles = eatOrderCache.get(key);
-    if (!tiles) {
-      tiles = computeEatOrder(s.regionId, s.attackerId);
-      eatOrderCache.set(key, tiles);
-    }
-    const progress = s.maxGarrison > 0 ? Math.min(1, Math.max(0, 1 - s.garrison / s.maxGarrison)) : 0;
-    return {
-      attackerColor: players.get(s.attackerId)?.color ?? "#ffffff",
-      tiles,
-      progress,
-    };
-  });
-
-  for (const key of eatOrderCache.keys()) {
-    if (!activeKeys.has(key)) eatOrderCache.delete(key);
-  }
-
-  renderer.setSiegeOverlays(overlays);
-}
-
 function centerCameraOnSelf(): void {
   if (selfId === null || mapWidth === 0) return;
   let sumX = 0;
@@ -388,10 +309,25 @@ function centerCameraOnSelf(): void {
   renderer.centerOn(sumX / count + 0.5, sumY / count + 0.5, SPAWN_ZOOM);
 }
 
+/** Bölgede en az bir tile'ımız var mı (bölge artık birden fazla oyuncu arasında bölünebilir — bkz. orantılı parçalı alım). */
+function regionHasOwnTile(regionId: number): boolean {
+  if (selfId === null) return false;
+  return (tilesByRegion[regionId] ?? []).some((idx) => ownerByTile[idx] === selfId);
+}
+
+/** Bu bölgeye saldırabilir miyim: ya zaten içinde bir parçam var (devam ettirebilirim) ya da komşu bir bölgede tile'ım var. */
 function isRegionAdjacentToSelf(regionId: number): boolean {
   if (selfId === null) return false;
+  if (regionHasOwnTile(regionId)) return true;
   const neighbors = regionNeighbors.get(regionId) ?? [];
-  return neighbors.some((nid) => regionOwner.get(nid) === selfId);
+  return neighbors.some((nid) => regionHasOwnTile(nid));
+}
+
+/** Bölgedeki HER tile bize mi ait — artık saldırılacak bir şey kalmadı mı? */
+function regionFullyOwnedBySelf(regionId: number): boolean {
+  if (selfId === null) return false;
+  const tiles = tilesByRegion[regionId] ?? [];
+  return tiles.length > 0 && tiles.every((idx) => ownerByTile[idx] === selfId);
 }
 
 function renderPanel(): void {
@@ -434,11 +370,10 @@ function updateHover(clientX: number, clientY: number): void {
   }
 
   let kind: HoverKind;
-  const isOwn = regionOwner.get(regionId) === selfId;
   if (armedBuilding) {
-    const validTile = isOwn && (armedBuilding !== "port" || coastalTile[tileIndex] === 1);
+    const validTile = ownerByTile[tileIndex] === selfId && (armedBuilding !== "port" || coastalTile[tileIndex] === 1);
     kind = validTile ? "self" : "invalid";
-  } else if (isOwn) {
+  } else if (ownerByTile[tileIndex] === selfId) {
     kind = "self";
   } else {
     kind = isRegionAdjacentToSelf(regionId) ? "valid" : "invalid";
@@ -505,8 +440,7 @@ function handleClick(clientX: number, clientY: number): void {
   }
 
   if (armedBuilding) {
-    const valid =
-      regionOwner.get(regionId) === selfId && (armedBuilding !== "port" || coastalTile[tileIndex] === 1);
+    const valid = ownerByTile[tileIndex] === selfId && (armedBuilding !== "port" || coastalTile[tileIndex] === 1);
     if (valid) {
       renderer.addRipple(world.x, world.y, "build");
       ws.send(JSON.stringify({ type: "build", buildingType: armedBuilding, tileIndex }));
@@ -517,7 +451,7 @@ function handleClick(clientX: number, clientY: number): void {
     return;
   }
 
-  const looksValid = regionOwner.get(regionId) !== selfId && isRegionAdjacentToSelf(regionId);
+  const looksValid = !regionFullyOwnedBySelf(regionId) && isRegionAdjacentToSelf(regionId);
   renderer.addRipple(world.x, world.y, looksValid ? "attack" : "invalid");
   ws.send(JSON.stringify({ type: "attack", regionId }));
 }

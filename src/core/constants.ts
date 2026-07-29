@@ -10,7 +10,6 @@ export const REGION_COUNT = 80;
 
 export const BASE_GARRISON = 50;
 export const GARRISON_PER_TILE = 0.3;
-export const GARRISON_REGEN_PER_TICK = 0.5;
 
 export const SIEGE_DAMAGE_PER_TICK = 4;
 export const NEUTRAL_SIEGE_COST_MULTIPLIER = 1;
@@ -19,7 +18,6 @@ export const BOOST_STEP = 1;
 export const MAX_BOOST = 4;
 
 export const CAPTURE_DEFENDER_TROOP_LOSS_RATIO = 0.3;
-export const NEW_OWNER_GARRISON_FRACTION = 0.25;
 
 export const WIN_LAND_FRACTION = 0.72;
 

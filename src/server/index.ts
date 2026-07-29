@@ -104,15 +104,12 @@ function toBuildingDTOs(state: GameState): BuildingDTO[] {
 }
 
 function toSiegeDTOs(state: GameState): SiegeDTO[] {
-  return state.getActiveSieges().map((s) => {
-    const region = state.regions[s.regionId];
-    return {
-      regionId: s.regionId,
-      attackerId: s.playerId,
-      garrison: Math.round(region.garrison),
-      maxGarrison: Math.round(region.maxGarrison),
-    };
-  });
+  return state.getActiveSieges().map((s) => ({
+    regionId: s.regionId,
+    attackerId: s.playerId,
+    garrison: Math.round(s.garrison),
+    maxGarrison: Math.round(s.maxGarrison),
+  }));
 }
 
 function toRegionOwnerDTOs(state: GameState): RegionOwnerDTO[] {

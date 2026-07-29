@@ -15,6 +15,15 @@ export interface Siege {
   playerId: number;
   regionId: number;
   boost: number;
+  /** Bölgenin, kuşatma başladığı andaki "henüz bu saldırganın olmayan" tile'ları, saldırganın sınırından içeri BFS sırasıyla. */
+  captureOrder: number[];
+  /** captureOrder içinde şu ana kadar ele geçirilmiş tile sayısı. */
+  cursor: number;
+  /** captureOrder'daki kalan tile'lar için kalan savunma (asker hasarıyla azalır). */
+  garrison: number;
+  maxGarrison: number;
+  /** Kuşatma başlarken donmuş maliyet çarpanı (nötr/düşman) — kuşatma ilerledikçe bölgenin çoğunluk sahibi değişse bile sabit kalır. */
+  costMultiplier: number;
 }
 
 export interface TickResult {
@@ -45,10 +54,6 @@ export class GameState {
   constructor(map: GameMap, regionCount: number = C.REGION_COUNT) {
     this.map = map;
     this.regions = generateRegions(map, regionCount);
-    for (const region of this.regions) {
-      region.maxGarrison = C.BASE_GARRISON + region.tiles.length * C.GARRISON_PER_TILE;
-      region.garrison = region.maxGarrison;
-    }
   }
 
   addPlayer(name: string): { player: Player; changes: TileChange[] } {
@@ -77,20 +82,16 @@ export class GameState {
 
     const changes: TileChange[] = [];
     for (const region of this.regions) {
-      if (region.ownerId !== id) continue;
-      region.ownerId = -1;
-      region.garrison = region.maxGarrison * C.NEW_OWNER_GARRISON_FRACTION;
+      let touched = false;
       for (const idx of region.tiles) {
+        if (this.map.owner[idx] !== id) continue;
         this.map.owner[idx] = -1;
         changes.push({ index: idx, ownerId: -1 });
+        touched = true;
       }
+      if (touched) this.recomputeRegionOwner(region);
     }
     return changes;
-  }
-
-  regionAt(tileIndex: number): Region | undefined {
-    const rid = this.map.regionOf[tileIndex];
-    return rid === -1 ? undefined : this.regions[rid];
   }
 
   buildCity(playerId: number, tileIndex: number): Building | null {
@@ -103,15 +104,7 @@ export class GameState {
   }
 
   buildDefensePost(playerId: number, tileIndex: number): Building | null {
-    const building = this.tryBuild(playerId, tileIndex, BuildingType.DefensePost, C.DEFENSE_POST_COST);
-    if (building) {
-      const region = this.regionAt(tileIndex);
-      if (region) {
-        region.maxGarrison += C.DEFENSE_POST_GARRISON_BONUS;
-        region.garrison += C.DEFENSE_POST_GARRISON_BONUS;
-      }
-    }
-    return building;
+    return this.tryBuild(playerId, tileIndex, BuildingType.DefensePost, C.DEFENSE_POST_COST);
   }
 
   buildPort(playerId: number, tileIndex: number): Building | null {
@@ -125,8 +118,9 @@ export class GameState {
   /** Oyuncunun sahip olduğu, üzerinde henüz bina olmayan bir kıyı tile'ı bulur (bot AI limanı için). */
   getOwnedCoastalTile(playerId: number): number | null {
     for (const region of this.regions) {
-      if (region.ownerId !== playerId || !region.isCoastal) continue;
+      if (!region.isCoastal) continue;
       for (const idx of region.tiles) {
+        if (this.map.owner[idx] !== playerId) continue;
         if (this.buildingsByTile.has(idx)) continue;
         if (this.isCoastalTileIndex(idx)) return idx;
       }
@@ -235,10 +229,15 @@ export class GameState {
 
     const target = this.regions[targetRegionId];
     if (!target) return;
-    if (target.ownerId === playerId) return;
+    if (this.regionFullyOwnedBy(target, playerId)) return;
 
-    const ownsNeighbor = Array.from(target.neighbors).some((nid) => this.regions[nid]?.ownerId === playerId);
-    if (!ownsNeighbor) return;
+    const canReach =
+      this.regionHasAnyTileOwnedBy(target, playerId) ||
+      Array.from(target.neighbors).some((nid) => {
+        const neighbor = this.regions[nid];
+        return neighbor !== undefined && this.regionHasAnyTileOwnedBy(neighbor, playerId);
+      });
+    if (!canReach) return;
 
     const existing = this.sieges.find((s) => s.playerId === playerId && s.regionId === targetRegionId);
     if (existing) {
@@ -246,7 +245,103 @@ export class GameState {
       return;
     }
 
-    this.sieges.push({ id: this.nextSiegeId++, playerId, regionId: targetRegionId, boost: 1 });
+    const captureOrder = this.computeCaptureOrder(target, playerId);
+    if (captureOrder.length === 0) return;
+
+    const maxGarrison = C.BASE_GARRISON + captureOrder.length * C.GARRISON_PER_TILE + this.regionDefenseBonus(target);
+    const costMultiplier = target.ownerId === -1 ? C.NEUTRAL_SIEGE_COST_MULTIPLIER : C.ENEMY_SIEGE_COST_MULTIPLIER;
+
+    this.sieges.push({
+      id: this.nextSiegeId++,
+      playerId,
+      regionId: targetRegionId,
+      boost: 1,
+      captureOrder,
+      cursor: 0,
+      garrison: maxGarrison,
+      maxGarrison,
+      costMultiplier,
+    });
+  }
+
+  /** Bölgedeki HER tile bu oyuncuya mı ait — kuşatmaya devam etmenin anlamlı olup olmadığını belirler. */
+  private regionFullyOwnedBy(region: Region, playerId: number): boolean {
+    return region.tiles.every((idx) => this.map.owner[idx] === playerId);
+  }
+
+  /** Bölgede bu oyuncuya ait EN AZ bir tile var mı — komşuluk/erişilebilirlik kontrolü için. */
+  private regionHasAnyTileOwnedBy(region: Region, playerId: number): boolean {
+    return region.tiles.some((idx) => this.map.owner[idx] === playerId);
+  }
+
+  /** Bölgedeki mevcut savunma binalarından (Karakol) gelen toplam garrison bonusu — anlık hesaplanır, tile ele geçirilip bina yıkılınca otomatik düşer. */
+  private regionDefenseBonus(region: Region): number {
+    let bonus = 0;
+    for (const idx of region.tiles) {
+      if (this.buildingsByTile.get(idx)?.type === BuildingType.DefensePost) bonus += C.DEFENSE_POST_GARRISON_BONUS;
+    }
+    return bonus;
+  }
+
+  /**
+   * Bölgenin, saldırgana henüz ait olmayan tile'larını, saldırganın sınırından
+   * (kendi tile'larına bitişik olan sınır tile'larından) başlayıp BFS ile içeri
+   * doğru yayılan sırayla döndürür. Kuşatma ilerledikçe hasar bu sırayla
+   * tile'ları tek tek saldırgana devrediyor (bkz. tickOnce).
+   */
+  private computeCaptureOrder(region: Region, attackerId: number): number[] {
+    const remaining = new Set<number>();
+    for (const idx of region.tiles) {
+      if (this.map.owner[idx] !== attackerId) remaining.add(idx);
+    }
+
+    const frontier: number[] = [];
+    for (const idx of remaining) {
+      const x = idx % this.map.width;
+      const y = Math.floor(idx / this.map.width);
+      const touchesAttacker = this.map
+        .neighbors(x, y)
+        .some(([nx, ny]) => this.map.owner[this.map.index(nx, ny)] === attackerId);
+      if (touchesAttacker) frontier.push(idx);
+    }
+    if (frontier.length === 0) {
+      const first = remaining.values().next().value;
+      if (first !== undefined) frontier.push(first);
+    }
+
+    const visited = new Set(frontier);
+    const order = [...frontier];
+    for (let head = 0; head < order.length; head++) {
+      const idx = order[head];
+      const x = idx % this.map.width;
+      const y = Math.floor(idx / this.map.width);
+      for (const [nx, ny] of this.map.neighbors(x, y)) {
+        const nIdx = this.map.index(nx, ny);
+        if (remaining.has(nIdx) && !visited.has(nIdx)) {
+          visited.add(nIdx);
+          order.push(nIdx);
+        }
+      }
+    }
+    return order;
+  }
+
+  /** Bölgenin tile sahiplik dağılımına bakıp `ownerId`'yi çoğunluk sahibine günceller (kaba bir "kime ait sayılır" göstergesi). */
+  private recomputeRegionOwner(region: Region): void {
+    const counts = new Map<number, number>();
+    for (const idx of region.tiles) {
+      const owner = this.map.owner[idx];
+      counts.set(owner, (counts.get(owner) ?? 0) + 1);
+    }
+    let best = -1;
+    let bestCount = -1;
+    for (const [owner, count] of counts) {
+      if (count > bestCount) {
+        bestCount = count;
+        best = owner;
+      }
+    }
+    region.ownerId = best;
   }
 
   cancelAttacks(playerId: number): void {
@@ -269,53 +364,42 @@ export class GameState {
       player.gold += player.tileCount * C.GOLD_PER_TILE_PER_TICK;
     }
 
-    // Regions under active siege don't passively heal — otherwise a slow,
-    // troop-starved siege can stall forever exactly at the regen rate.
-    const siegedRegionIds = new Set(this.sieges.map((s) => s.regionId));
-    for (const region of this.regions) {
-      if (siegedRegionIds.has(region.id)) continue;
-      if (region.garrison < region.maxGarrison) {
-        region.garrison = Math.min(region.maxGarrison, region.garrison + C.GARRISON_REGEN_PER_TICK);
-      }
-    }
-
     const remainingSieges: Siege[] = [];
     for (const siege of this.sieges) {
       const player = this.players.get(siege.playerId);
       if (!player) continue;
       const region = this.regions[siege.regionId];
-      if (!region || region.ownerId === siege.playerId) continue;
+      if (!region || siege.cursor >= siege.captureOrder.length) continue;
 
-      const costMultiplier = region.ownerId === -1 ? C.NEUTRAL_SIEGE_COST_MULTIPLIER : C.ENEMY_SIEGE_COST_MULTIPLIER;
       const desiredDamage = C.SIEGE_DAMAGE_PER_TICK * siege.boost;
-      const damage = Math.min(desiredDamage, player.troops / costMultiplier);
+      const damage = Math.min(desiredDamage, player.troops / siege.costMultiplier);
 
       if (damage <= 0) {
         remainingSieges.push(siege);
         continue;
       }
 
-      player.troops -= damage * costMultiplier;
-      region.garrison -= damage;
+      player.troops -= damage * siege.costMultiplier;
+      siege.garrison = Math.max(0, siege.garrison - damage);
 
-      if (region.garrison > 0) {
-        remainingSieges.push(siege);
-        continue;
-      }
+      // Bu tick'e kadar birikmiş hasarın "satın aldığı" tile sayısı — kuşatma
+      // askerin harcadığı gücüyle orantılı olarak, tamamlanmayı beklemeden
+      // tile tek tek saldırgana geçiyor.
+      const targetCursor =
+        siege.maxGarrison > 0
+          ? Math.min(siege.captureOrder.length, Math.round((1 - siege.garrison / siege.maxGarrison) * siege.captureOrder.length))
+          : siege.captureOrder.length;
 
-      const previousOwnerId = region.ownerId;
-      const defender = previousOwnerId !== -1 ? this.players.get(previousOwnerId) : undefined;
-      if (defender) {
-        defender.tileCount -= region.tiles.length;
-        defender.troops = Math.max(
-          0,
-          defender.troops - region.tiles.length * C.CAPTURE_DEFENDER_TROOP_LOSS_RATIO,
-        );
-      }
+      for (let i = siege.cursor; i < targetCursor; i++) {
+        const idx = siege.captureOrder[i];
+        const previousOwnerId = this.map.owner[idx];
+        if (previousOwnerId === siege.playerId) continue;
 
-      for (const idx of region.tiles) {
-        this.map.owner[idx] = siege.playerId;
-        changes.push({ index: idx, ownerId: siege.playerId });
+        const defender = previousOwnerId !== -1 ? this.players.get(previousOwnerId) : undefined;
+        if (defender) {
+          defender.tileCount--;
+          defender.troops = Math.max(0, defender.troops - C.CAPTURE_DEFENDER_TROOP_LOSS_RATIO);
+        }
 
         const building = this.buildingsByTile.get(idx);
         if (building) {
@@ -323,11 +407,17 @@ export class GameState {
           this.buildingsByTile.delete(idx);
           if (defender && building.type === BuildingType.City) defender.cityCount--;
         }
-      }
 
-      region.ownerId = siege.playerId;
-      region.garrison = region.maxGarrison * C.NEW_OWNER_GARRISON_FRACTION;
-      player.tileCount += region.tiles.length;
+        this.map.owner[idx] = siege.playerId;
+        changes.push({ index: idx, ownerId: siege.playerId });
+        player.tileCount++;
+      }
+      siege.cursor = targetCursor;
+      this.recomputeRegionOwner(region);
+
+      if (siege.cursor < siege.captureOrder.length) {
+        remainingSieges.push(siege);
+      }
     }
     this.sieges = remainingSieges;
 
@@ -536,7 +626,9 @@ export class GameState {
   }
 
   private assignHomeRegion(player: Player): TileChange[] {
-    const neutralRegions = this.regions.filter((r) => r.ownerId === -1);
+    // Yeni oyuncuyu bölünmüş (kısmen ele geçirilmiş) bir savaş bölgesine değil,
+    // baştan sona nötr bir bölgeye doğuruyoruz.
+    const neutralRegions = this.regions.filter((r) => r.tiles.every((idx) => this.map.owner[idx] === -1));
     if (neutralRegions.length === 0) return [];
 
     const region = neutralRegions[Math.floor(Math.random() * neutralRegions.length)];

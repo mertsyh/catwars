@@ -23,8 +23,9 @@ OpenFrontIO'nun kodu AGPL-3.0, asset'leri CC BY-SA 4.0 ile lisanslı. Bu proje o
 | 12 | [faz-12-takim-modlari-lobiler.md](faz-12-takim-modlari-lobiler.md) | Takım Modları + Özel Lobiler | Faz 11 (takım = kalıcı ittifak) |
 | 13 | [faz-13-fabrika-tren.md](faz-13-fabrika-tren.md) | Fabrika + Tren/Demiryolu | Faz 6 (pathfinding), Faz 11 (müttefik tarifesi) |
 | 14 | [faz-14-hosting-deploy.md](faz-14-hosting-deploy.md) | Hosting/Deploy (opsiyonel) | — |
+| 15 | [faz-15-gorsel-iyilestirmeler.md](faz-15-gorsel-iyilestirmeler.md) | Görsel İyileştirmeler | — (kendi içinde 15.1-15.6 alt fazlarına bölünmüş) |
 
-Numaralandırma PROGRESS.md'deki mevcut "Faz 0/2/4/5" geçmişinin devamıdır (Faz 1/3 daha önce de atlanmış, sıralı olmaları şart değil — bkz. mevcut dosyanın "Geliştirme Süreci" bölümü). Bağımlılığı olmayan fazlar (6, 8, 10, 11) paralel/istenen sırada alınabilir; 7/9/12/13 kendi bağımlılıklarından önce başlamamalı.
+Numaralandırma PROGRESS.md'deki mevcut "Faz 0/2/4/5" geçmişinin devamıdır (Faz 1/3 daha önce de atlanmış, sıralı olmaları şart değil — bkz. mevcut dosyanın "Geliştirme Süreci" bölümü). Bağımlılığı olmayan fazlar (6, 8, 10, 11, 15) paralel/istenen sırada alınabilir; 7/9/12/13 kendi bağımlılıklarından önce başlamamalı. Faz 15 diğerlerinden farklı olarak bir gameplay mekaniği eklemiyor — sadece görsel/render kalitesini artırıyor, bu yüzden herhangi bir noktada (hatta diğer fazlarla iç içe) alınabilir.
 
 ## Her faz dosyasının şablonu
 
