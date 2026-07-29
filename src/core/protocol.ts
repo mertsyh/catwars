@@ -104,6 +104,8 @@ export type ServerMessage = MapMessage | InitMessage | TickMessage | GameOverMes
 export interface JoinMessage {
   type: "join";
   name: string;
+  /** Faz 9: sadece henüz kimse katılmamışken (oyun ilk kez kuruluyorken) anlamlı. */
+  mapId?: string;
 }
 
 export interface AttackMessage {

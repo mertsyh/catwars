@@ -20,7 +20,8 @@ src/
 `core` katmanı render veya network'ten tamamen bağımsızdır — bu sayede hem server (yetkili simülasyon) hem de gelecekte client-side prediction aynı kodu paylaşabilir.
 
 ### `core` dosyaları
-- `GameMap.ts` — terrain (kara/deniz) ızgarası, `owner` (tile→oyuncu) ve `regionOf` (tile→bölge) dizileri. `fromTerrain()` (Faz 8) önceden üretilmiş bir terrain grid'inden kurar — sunucu artık bunu `resources/maps/europe.json` ile kullanıyor. `generateIsland()` placeholder dairesel ada üretimi, dosya yoksa fallback olarak korunuyor.
+- `GameMap.ts` — terrain (kara/deniz) ızgarası, `owner` (tile→oyuncu) ve `regionOf` (tile→bölge) dizileri. `fromTerrain()` (Faz 8) önceden üretilmiş bir terrain grid'inden kurar — sunucu bunu `resources/maps/<id>.json` ile kullanıyor (Faz 9: hangi `id` seçildiğine göre). `generateIsland()` placeholder/"Rastgele Ada" dairesel üretimi, dosya yoksa fallback olarak da korunuyor.
+- `maps.ts` (Faz 9) — `MAP_REGISTRY` (istemcinin harita seçim dropdown'ında ve sunucunun `mapId` doğrulamasında kullandığı ortak liste), `WORLD_MAP_SPECS` (build-time bbox'lar), `DEFAULT_MAP_ID`, `RANDOM_ISLAND_MAP_ID`.
 - `regions.ts` — Voronoi tabanlı bölge üretimi (`generateRegions`): rastgele + Lloyd gevşetmeli tohum noktalarından ~80 dengeli "ülke" bölgesi, komşuluk grafiği, merkez koordinatı.
 - `civilizationNames.ts` — bölgelere atanan ~108 tarihi medeniyet/ülke ismi havuzu.
 - `Player.ts` — oyuncu kaynakları (asker, altın, toprak sayısı, şehir sayısı) ve `maxTroops` hesaplaması.
@@ -55,6 +56,7 @@ src/
 9. **Liman + Ticaret Gemisi** (Faz 6): kıyı bölgesindeki bir tile'a Liman (450 altın, her ek liman 2x pahalılaşır, tavan 3600) inşa edilebilir. Limanı olan oyuncular arasında periyodik olarak otomatik **ticaret gemileri** doğar, su üzerinde BFS ile bulunmuş rotayı takip ederek karşı limana ulaşır ve varışta her iki liman sahibine altın öder. Bot'lar da düşük olasılıkla liman inşa eder.
 10. **Savaş Gemisi + Deniz Savaşı** (Faz 7): limanda Savaş Gemisi (800 altın, her ek gemi +400, tavan 3000; 3 sn inşa süresi) inşa edilip suyun herhangi bir noktasına yönlendirilebilir (gemiye tıkla=seç, suya tıkla=hareket ettir, sağ tık=seçimi iptal et). Menzile giren düşman gemileri otomatik hasarlaşır; HP %30'un altına düşen gemi en yakın kendi limanına kaçıp onarılır, HP 0'a inen gemi yok olur. Düşman savaş gemisi, geçiş yolundaki (ilişkisiz) ticaret gemilerini yakalayıp yok edebilir ve bonus altın kazanır.
 11. **Gerçek Dünya Haritası** (Faz 8): placeholder dairesel ada yerine gerçek bir kıyı şeridi — Natural Earth'ün public domain `ne_50m_land` kara poligonu verisinden (`resources/geo-source/`, gitignore'da) Avrupa bbox'ı (`lon -25..45, lat 34..72`) 400×300 tile'a scanline (even-odd) yöntemiyle rasterize ediliyor. `scripts/build-map.ts` (`npm run build:maps`) çıktıyı `resources/maps/europe.json`'a yazıyor; sunucu açılışta bunu okuyor, dosya yoksa placeholder daireye düşüyor.
+12. **Çoklu Harita Desteği** (Faz 9): `src/core/maps.ts`'te `MAP_REGISTRY` (Avrupa, Afrika, Kuzey Amerika + prosedürel "Rastgele Ada") ve build-time `WORLD_MAP_SPECS` (bbox'lar) tek kaynaktan tanımlanıyor; `scripts/build-map.ts` artık bu listedeki her bölge için ayrı `resources/maps/<id>.json` üretiyor. İstemci artık bağlanmadan önce bir harita seçim ekranı gösteriyor (`index.html`'deki `#startScreen`), seçilen `mapId` `join` mesajıyla sunucuya gidiyor. Sunucu, harita + `GameState`'i (ve bot'ları) artık açılışta değil **ilk oyuncu katıldığında** kuruyor — böylece o oyuncunun seçtiği harita geçerli oluyor; oyun bir kez kurulduktan sonra gelen farklı `mapId`'ler yok sayılıp mevcut harita kullanılıyor (tarayıcıda iki sekmeyle doğrulandı).
 
 ## Denge Sabitleri (`src/core/constants.ts`)
 
@@ -97,7 +99,8 @@ src/
 8. **Bölge tabanlı büyük revizyon** — kullanıcı isteği: haritanın rastgele sınırlı, isimli "ülke" bölgelerinden oluşması, saldırının piksele değil bölgeye yapılması, herkesin aynı boyda başlaması, binalar için alt bar. Tile-flood tamamen kaldırıldı, yerine Voronoi bölge + garrison/kuşatma sistemi geldi.
 9. **Faz 6 — Liman + Ticaret Gemisi** — [docs/phases/faz-06-liman-ticaret-gemisi.md](docs/phases/faz-06-liman-ticaret-gemisi.md) planına göre uygulandı: `RegionMeta`/`GameMap`'e kıyı tile tespiti, `src/core/pathfinding.ts`'te su üzerinde BFS rota bulma, `Port` binası (katlanan maliyet), `TradeShip` varlığı (doğuş/ilerleme/varış, istemci tarafında `spawnTick`+hız'dan lokal interpolasyon — her tick tam pozisyon yayınlanmıyor). Bot AI'ya düşük olasılıklı liman inşası eklendi.
 10. **Faz 7 — Savaş Gemisi + Deniz Savaşı** — [docs/phases/faz-07-savas-gemisi-deniz-savasi.md](docs/phases/faz-07-savas-gemisi-deniz-savasi.md) planına göre uygulandı: `pathfinding.ts` genelleştirildi (`findWaterPath` → `findShipRoute`, kara/su herhangi bir kombinasyonu kabul eder; artı paylaşılan `positionAlongPath` — hem sunucu çarpışma/yakalama menzil kontrolü hem istemci render'ı aynı fonksiyonu kullanır). `Warship` varlığı (inşa→boşta→hareket→dönüş durum makinesi), oyuncu kontrollü hedefleme (gemiye tıkla=seç, suya tıkla=hareket ettir), tick-bazlı `resolveNavalCombat` (düşman çiftleri menzildeyken hasarlaşır, düşük HP'de otomatik geri çekilme, HP 0'da yok olma) ve `captureTradeShips` (düşman ticaret gemisini yakalayana bonus altın) eklendi.
-11. **Faz 8 — Gerçek Dünya Haritası** (mevcut durum) — [docs/phases/faz-08-gercek-dunya-haritasi.md](docs/phases/faz-08-gercek-dunya-haritasi.md) planına göre uygulandı: `GameMap.fromTerrain()` (Node/fs'ten bağımsız, saf veri fabrikası — `core` katmanının client'ta da import edilebilir kalması için dosya okuma işi `server/index.ts`'e bırakıldı). `scripts/build-map.ts`, Natural Earth `ne_50m_land` (public domain, `resources/geo-source/`'a indirilir, commit'lenmez) verisinden Avrupa bbox'ını even-odd scanline algoritmasıyla rasterize edip `resources/maps/europe.json`'a yazıyor (`npm run build:maps`). Sunucu açılışta bu dosyayı okuyor; yoksa placeholder daireye düşüyor.
+11. **Faz 8 — Gerçek Dünya Haritası** — [docs/phases/faz-08-gercek-dunya-haritasi.md](docs/phases/faz-08-gercek-dunya-haritasi.md) planına göre uygulandı: `GameMap.fromTerrain()` (Node/fs'ten bağımsız, saf veri fabrikası — `core` katmanının client'ta da import edilebilir kalması için dosya okuma işi `server/index.ts`'e bırakıldı). `scripts/build-map.ts`, Natural Earth `ne_50m_land` (public domain, `resources/geo-source/`'a indirilir, commit'lenmez) verisinden Avrupa bbox'ını even-odd scanline algoritmasıyla rasterize edip `resources/maps/europe.json`'a yazıyor (`npm run build:maps`). Sunucu açılışta bu dosyayı okuyor; yoksa placeholder daireye düşüyor.
+12. **Faz 9 — Çoklu Harita Desteği** (mevcut durum) — [docs/phases/faz-09-coklu-harita.md](docs/phases/faz-09-coklu-harita.md) planına göre uygulandı: `src/core/maps.ts` eklendi (`MAP_REGISTRY`, `WORLD_MAP_SPECS`, `DEFAULT_MAP_ID`, `RANDOM_ISLAND_MAP_ID`); `scripts/build-map.ts` tek sabit `REGIONS` dizisi yerine bu ortak listeyi kullanacak şekilde genelleştirildi ve `africa.json` + `north-america.json` üretildi (europe.json aynı kaldı, deterministik). `protocol.ts`'teki `JoinMessage`'a opsiyonel `mapId` eklendi. `server/index.ts` büyük ölçüde refaktör edildi: harita + `GameState` artık modül yüklenirken değil, `ensureGame()` içinde **ilk `join` mesajında** kuruluyor (bot spawn'ı da buna taşındı); DTO fonksiyonları (`toDTO`, `toBuildingDTOs`, vb.) modül-seviyesi değişken yerine `state` parametresi alacak şekilde değiştirildi (null-safety için), iki `setInterval` (bot AI, tick döngüsü) `instance` null kontrolü ile korunuyor. İstemciye (`index.html` + `main.ts`) bağlanmadan önce gösterilen bir `#startScreen` (harita dropdown + "Oyuna Katıl" butonu) eklendi; WebSocket bağlantısı artık sayfa yüklenince değil, bu butona tıklanınca açılıyor ve seçilen `mapId` `join` mesajına ekleniyor. İki ayrı tarayıcı sekmesiyle uçtan uca doğrulandı: ilk sekme "Afrika" seçip oyunu kurdu, ikinci sekme "Kuzey Amerika" seçmesine rağmen zaten kurulu olan Afrika haritasına katıldı (spesifikasyondaki "oyun kurulduysa mapId yok sayılır" davranışı).
 
 ## Bilinen ve Düzeltilen Hatalar
 
@@ -107,8 +110,8 @@ src/
 
 ## Bilinçli Basitleştirmeler / Sınırlamalar
 
-- Gerçek dünya haritası var (Faz 8) ama tek harita (Avrupa) — çoklu harita seçimi henüz yok (Faz 9).
-- Tek oyun modu (herkese karşı herkes). Takım modu, özel lobi yok.
+- Gerçek dünya haritaları var (Avrupa, Afrika, Kuzey Amerika) + prosedürel "Rastgele Ada" (Faz 8+9); OpenFront'un onlarca haritasıyla sayı yarışı hedeflenmiyor, bilinçli olarak 4 ile sınırlı tutuldu.
+- Tek oyun modu (herkese karşı herkes). Takım modu, özel lobi yok. Harita seçimi var ama tam lobi UI'ı değil — sadece join-öncesi bir dropdown (Faz 12'de gerçek lobi sistemi gelecek).
 - Liman + ticaret gemisi (Faz 6) ve savaş gemisi + deniz savaşı (Faz 7) var. Kıyı savunma yapılarının gemilere ateş etmesi yok; yakalanan ticaret gemisi el değiştirmiyor, doğrudan yok oluyor (bonus altın karşılığında).
 - Nükleer silahlar (atom bombası, MIRV, SAM) yok.
 - Tren/demiryolu sistemi yok.
@@ -123,7 +126,7 @@ src/
 1. ~~**Liman + Ticaret Gemisi**~~ ([faz-06](docs/phases/faz-06-liman-ticaret-gemisi.md)) — **tamamlandı.**
 2. ~~**Savaş Gemisi + deniz savaşı**~~ ([faz-07](docs/phases/faz-07-savas-gemisi-deniz-savasi.md)) — **tamamlandı.**
 3. ~~**Gerçek dünya haritası**~~ ([faz-08](docs/phases/faz-08-gercek-dunya-haritasi.md)) — **tamamlandı** (Avrupa).
-4. **Çoklu harita desteği** ([faz-09](docs/phases/faz-09-coklu-harita.md)) — birkaç seçilebilir harita (OpenFront'taki gibi onlarca değil, bizim ölçeğimizde 3-5 yeterli).
+4. ~~**Çoklu harita desteği**~~ ([faz-09](docs/phases/faz-09-coklu-harita.md)) — **tamamlandı** (Avrupa, Afrika, Kuzey Amerika, Rastgele Ada — 4 harita).
 5. **Nükleer silahlar** ([faz-10](docs/phases/faz-10-nukleer-silahlar.md)) — Atom bombası → Hidrojen bombası → MIRV, SAM savunması.
 6. **İttifak/diplomasi sistemi** ([faz-11](docs/phases/faz-11-ittifak-diplomasi.md)).
 7. **Takım modları, özel lobiler** ([faz-12](docs/phases/faz-12-takim-modlari-lobiler.md)).
@@ -134,10 +137,12 @@ src/
 
 ```bash
 npm install
-npm run build:maps   # resources/maps/europe.json üretir (bir kere; Natural Earth'ten internet gerektirir)
+npm run build:maps   # resources/maps/{europe,africa,north-america}.json üretir (bir kere; kaynak: resources/geo-source/)
 npm run dev           # client: http://localhost:5173, server: http://localhost:3000
 ```
 
-`resources/maps/europe.json` zaten repoda mevcutsa `build:maps` adımı atlanabilir — sadece dosya yoksa (veya haritayı yeniden üretmek isterseniz) gerekir. Yoksa sunucu placeholder dairesel adaya düşer (konsola uyarı basar).
+`resources/maps/*.json` dosyaları zaten repoda mevcutsa `build:maps` adımı atlanabilir — sadece dosyalar yoksa (veya haritaları yeniden üretmek isterseniz) gerekir. Bir harita dosyası bulunamazsa sunucu placeholder dairesel adaya düşer (konsola uyarı basar).
+
+Oyuna bağlanmadan önce açılan ekrandan harita seçilir (Avrupa/Afrika/Kuzey Amerika/Rastgele Ada — bkz. `src/core/maps.ts`), sonra "Oyuna Katıl" ile bağlanılır. Not: oyun zaten kurulu (başka biri katılmışsa) farklı bir harita seçimi yok sayılır, mevcut oyuna katılınır.
 
 Kontroller: tekerlek=zoom, sürükle=pan, tık=bölgeye saldır (tekrar tıkla=hızlandır), sağ tık=saldırıları/gemi seçimini iptal et, alttaki bar'dan bina seç (Şehir/Karakol/Liman/Savaş Gemisi) + kendi bölgene (Savaş Gemisi için kendi limanına) tıkla=inşa et (Liman için tıklanan tile'ın kıyıya bitişik olması gerekir). Kendi savaş gemine tıkla=seç, sonra suya tıkla=hareket ettir.

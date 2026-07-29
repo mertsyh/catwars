@@ -1,4 +1,5 @@
 import { WARSHIP_SPEED_TILES_PER_TICK } from "../core/constants";
+import { DEFAULT_MAP_ID, MAP_REGISTRY } from "../core/maps";
 import { positionAlongPath } from "../core/pathfinding";
 import type {
   BuildingDTO,
@@ -29,6 +30,9 @@ const cityBtn = document.getElementById("btn-city") as HTMLButtonElement;
 const defenseBtn = document.getElementById("btn-defense") as HTMLButtonElement;
 const portBtn = document.getElementById("btn-port") as HTMLButtonElement;
 const warshipBtn = document.getElementById("btn-warship") as HTMLButtonElement;
+const startScreenEl = document.getElementById("startScreen") as HTMLDivElement;
+const mapSelectEl = document.getElementById("mapSelect") as HTMLSelectElement;
+const startBtnEl = document.getElementById("startBtn") as HTMLButtonElement;
 
 function resize(): void {
   canvas.width = window.innerWidth;
@@ -57,40 +61,58 @@ let regionOwner = new Map<number, number>();
 let hasCenteredOnSpawn = false;
 let armedBuilding: "city" | "defensePost" | "port" | "warship" | null = null;
 
-const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
-const ws = new WebSocket(`${wsProtocol}//${location.host}/ws`);
+let ws: WebSocket;
 
-ws.addEventListener("open", () => {
-  statusEl.textContent = "bağlandı, harita bekleniyor...";
-  const name = `Oyuncu-${Math.floor(Math.random() * 1000)}`;
-  ws.send(JSON.stringify({ type: "join", name }));
-});
+/** Faz 9: harita seçim ekranındaki "Oyuna Katıl" tıklamasıyla tetiklenir — bağlantı önceden açılmaz. */
+function startGame(mapId: string): void {
+  startScreenEl.style.display = "none";
+  statusEl.textContent = "bağlanılıyor...";
 
-ws.addEventListener("close", () => {
-  statusEl.textContent = "bağlantı koptu";
-});
+  const wsProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${wsProtocol}//${location.host}/ws`);
 
-ws.addEventListener("error", () => {
-  statusEl.textContent = "bağlantı hatası";
-});
+  ws.addEventListener("open", () => {
+    statusEl.textContent = "bağlandı, harita bekleniyor...";
+    const name = `Oyuncu-${Math.floor(Math.random() * 1000)}`;
+    ws.send(JSON.stringify({ type: "join", name, mapId }));
+  });
 
-ws.addEventListener("message", (event) => {
-  const msg = JSON.parse(event.data) as ServerMessage;
-  switch (msg.type) {
-    case "map":
-      handleMap(msg);
-      break;
-    case "init":
-      handleInit(msg);
-      break;
-    case "tick":
-      handleTick(msg);
-      break;
-    case "gameOver":
-      handleGameOver(msg);
-      break;
-  }
-});
+  ws.addEventListener("close", () => {
+    statusEl.textContent = "bağlantı koptu";
+  });
+
+  ws.addEventListener("error", () => {
+    statusEl.textContent = "bağlantı hatası";
+  });
+
+  ws.addEventListener("message", (event) => {
+    const msg = JSON.parse(event.data) as ServerMessage;
+    switch (msg.type) {
+      case "map":
+        handleMap(msg);
+        break;
+      case "init":
+        handleInit(msg);
+        break;
+      case "tick":
+        handleTick(msg);
+        break;
+      case "gameOver":
+        handleGameOver(msg);
+        break;
+    }
+  });
+}
+
+for (const entry of MAP_REGISTRY) {
+  const option = document.createElement("option");
+  option.value = entry.id;
+  option.textContent = `${entry.name} (${entry.width}x${entry.height})`;
+  if (entry.id === DEFAULT_MAP_ID) option.selected = true;
+  mapSelectEl.appendChild(option);
+}
+
+startBtnEl.addEventListener("click", () => startGame(mapSelectEl.value));
 
 function handleMap(msg: MapMessage): void {
   mapWidth = msg.width;

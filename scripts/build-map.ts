@@ -1,12 +1,15 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { WORLD_MAP_SPECS } from "../src/core/maps";
 
 /**
  * Build-time script — runtime kodunun parçası değil. Natural Earth'ün public
  * domain kara poligonu verisini (bkz. resources/geo-source/, .gitignore'da,
- * `npm run build:maps` her seferinde yeniden indirir) hedef genişlik×yükseklik
- * tile grid'ine rasterize edip `resources/maps/<id>.json` olarak yazar.
+ * `npm run build:maps` her seferinde yeniden indirir) `WORLD_MAP_SPECS`
+ * (bkz. src/core/maps.ts, Faz 9) içindeki her bölge için hedef
+ * genişlik×yükseklik tile grid'ine rasterize edip `resources/maps/<id>.json`
+ * olarak yazar.
  *
  * OpenFrontIO'nun kendi harita asset'leri kullanılmıyor (CC BY-SA 4.0,
  * share-alike gerektiriyor) — bkz. docs/phases/faz-08-gercek-dunya-haritasi.md.
@@ -16,17 +19,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const SOURCE_GEOJSON = path.join(ROOT, "resources/geo-source/ne_50m_land.geojson");
 const OUTPUT_DIR = path.join(ROOT, "resources/maps");
-
-interface MapRegionSpec {
-  id: string;
-  name: string;
-  /** [minLon, minLat, maxLon, maxLat] */
-  bbox: [number, number, number, number];
-  width: number;
-  height: number;
-}
-
-const REGIONS: MapRegionSpec[] = [{ id: "europe", name: "Avrupa", bbox: [-25, 34, 45, 72], width: 400, height: 300 }];
 
 type Ring = [number, number][];
 type Edge = [number, number, number, number];
@@ -101,7 +93,7 @@ function main(): void {
   const edges = loadEdges(SOURCE_GEOJSON);
   mkdirSync(OUTPUT_DIR, { recursive: true });
 
-  for (const region of REGIONS) {
+  for (const region of WORLD_MAP_SPECS) {
     const terrain = rasterize(edges, region.bbox, region.width, region.height);
     const landCount = terrain.reduce((sum, v) => sum + v, 0);
     const outPath = path.join(OUTPUT_DIR, `${region.id}.json`);

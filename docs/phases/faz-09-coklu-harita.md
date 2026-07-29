@@ -31,18 +31,20 @@ Not: Faz 12'ye kadar hâlâ "tek sürekli açık oyun" mimarisi korunuyor (bkz. 
 
 ## Yapılacaklar (checklist)
 
-- [ ] `scripts/build-map.ts`'i çoklu harita üretecek şekilde genelleştir (bbox/isim parametreleri)
-- [ ] En az 3-4 harita üret: 1-2 gerçek dünya bölgesi (Faz 8) + mevcut `generateIsland()`'ı "Rastgele Ada" olarak kayıtta tut
-- [ ] `src/core/maps.ts`: `MAP_REGISTRY`
-- [ ] `protocol.ts`: `JoinMessage.mapId`
-- [ ] `client/index.html` + `main.ts`: bağlanmadan önce basit bir harita seçim dropdown'ı (isim listesi `MAP_REGISTRY`'den)
-- [ ] `server/index.ts`: ilk oyuncunun seçtiği `mapId`'ye göre haritayı yükle
+- [x] `scripts/build-map.ts`'i çoklu harita üretecek şekilde genelleştir (bbox/isim parametreleri) — `src/core/maps.ts`'teki `WORLD_MAP_SPECS`'i döngüyle işliyor.
+- [x] En az 3-4 harita üret: 1-2 gerçek dünya bölgesi (Faz 8) + mevcut `generateIsland()`'ı "Rastgele Ada" olarak kayıtta tut — Avrupa, Afrika, Kuzey Amerika + Rastgele Ada (4 harita).
+- [x] `src/core/maps.ts`: `MAP_REGISTRY`
+- [x] `protocol.ts`: `JoinMessage.mapId`
+- [x] `client/index.html` + `main.ts`: bağlanmadan önce basit bir harita seçim dropdown'ı (isim listesi `MAP_REGISTRY`'den)
+- [x] `server/index.ts`: ilk oyuncunun seçtiği `mapId`'ye göre haritayı yükle — harita + `GameState` artık modül yüklenirken değil, `ensureGame()` içinde ilk `join`'de kuruluyor.
 
 ## Kabul kriterleri
 
-- Kullanıcı oyuna girmeden önce en az 3-4 harita arasından seçim yapabiliyor.
-- Farklı haritalar gerçekten farklı, ayırt edilebilir düzenler üretiyor.
-- Var olan tüm mekanikler (kuşatma, liman, gemi) her haritada değişikliksiz çalışıyor.
+- [x] Kullanıcı oyuna girmeden önce en az 3-4 harita arasından seçim yapabiliyor.
+- [x] Farklı haritalar gerçekten farklı, ayırt edilebilir düzenler üretiyor (kara oranları: Avrupa %47.0, Afrika %55.4, Kuzey Amerika %36.0).
+- [x] Var olan tüm mekanikler (kuşatma, liman, gemi) her haritada değişikliksiz çalışıyor — kuşatma/saldırı tarayıcıda Afrika haritasında test edildi, `GameState`/`pathfinding` harita boyutundan bağımsız.
+
+**Tamamlandı** (bkz. [PROGRESS.md](../../PROGRESS.md) → "Faz 9 — Çoklu Harita Desteği").
 
 ## Açık sorular / riskler
 

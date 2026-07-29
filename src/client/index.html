@@ -103,10 +103,64 @@
       #buildBar .icon {
         font-size: 18px;
       }
+      #startScreen {
+        position: fixed;
+        inset: 0;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0b1220;
+      }
+      #startBox {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 260px;
+        padding: 24px 28px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid #26374f;
+        border-radius: 10px;
+        color: #e6edf3;
+        font: 13px monospace;
+      }
+      #startBox h1 {
+        margin: 0 0 4px;
+        font-size: 18px;
+        text-align: center;
+        letter-spacing: 0.5px;
+      }
+      #startBox label {
+        color: #9fb3c8;
+      }
+      #startBox select,
+      #startBox button {
+        font: 13px monospace;
+        padding: 8px 10px;
+        background: #16233a;
+        border: 1px solid #2c3f5c;
+        border-radius: 6px;
+        color: #e6edf3;
+      }
+      #startBox button {
+        cursor: pointer;
+        margin-top: 4px;
+      }
+      #startBox button:hover {
+        background: #1e3050;
+      }
     </style>
   </head>
   <body>
-    <div id="status">bağlanıyor...</div>
+    <div id="startScreen">
+      <div id="startBox">
+        <h1>OpenFrontClone</h1>
+        <label for="mapSelect">Harita</label>
+        <select id="mapSelect"></select>
+        <button id="startBtn">Oyuna Katıl</button>
+      </div>
+    </div>
+    <div id="status"></div>
     <div id="panel"></div>
     <div id="hint">
       Tekerlek: yakınlaştır/uzaklaştır &nbsp;|&nbsp; Sürükle: haritada gez &nbsp;|&nbsp; Tık: bölgeye saldır
