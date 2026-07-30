@@ -14,18 +14,17 @@ export interface TileChange {
  * oyuncu) karşı süregelen "cephesi". Bölge/anchor-tabanlı sabit bir fetih
  * alanı YOK — her tick, saldırganın o anki sınırından (frontier) hedefin
  * topraklarına dokunan tile'lar taze taze bulunup (bkz. edgeTilesFor) oradan
- * içeri doğru harcanan askerle orantılı tile tile ilerlenir. Aynı hedefe karşı
- * tek bir cephe olur (tekrar tıklamak boost'lar); farklı hedeflere (nötr +
- * birden fazla düşman) karşı eş zamanlı ayrı cepheler açılabilir.
+ * içeri doğru harcanan askerle orantılı tile tile ilerlenir. Hangi tile'ın
+ * önce alınacağı rastgele seçilir (bkz. pickCaptureTile) — böylece büyüme,
+ * tıklanan yöne değil cephenin tamamına eşit oranda dağılır. Aynı hedefe
+ * karşı tek bir cephe olur (tekrar tıklamak boost'lar); farklı hedeflere
+ * (nötr + birden fazla düşman) karşı eş zamanlı ayrı cepheler açılabilir.
  */
 export interface AttackOrder {
   id: number;
   playerId: number;
   /** -1 = nötr toprak, aksi halde belirli bir düşman oyuncu id'si. */
   targetOwnerId: number;
-  /** Tıklanan nokta — eşit maliyetli birden fazla tile arasında hangisinin önce alınacağını belirler (o yöne doğru büyüme hissi). */
-  focusX: number;
-  focusY: number;
   boost: number;
   /** Bu tick'e kadar harcanıp henüz tile'a çevrilmemiş asker (bkz. tileCaptureCost). */
   progress: number;
@@ -257,14 +256,13 @@ export class GameState {
     const existing = this.attackOrders.find((o) => o.playerId === playerId && o.targetOwnerId === targetOwnerId);
     if (existing) {
       existing.boost = Math.min(C.MAX_BOOST, existing.boost + C.BOOST_STEP);
-      existing.focusX = tx;
-      existing.focusY = ty;
       return;
     }
 
-    const touchesAttacker = this.map
-      .neighbors(tx, ty)
-      .some(([nx, ny]) => this.map.owner[this.map.index(nx, ny)] === playerId);
+    // Tıklanan tile'ın kendisi sınırıma değmese de olur — hedefin toprağı
+    // (nötr veya düşman) haritanın herhangi bir yerinde bana değiyorsa cephe
+    // açılır ve tüm o cephe hattı boyunca eşit oranda ilerler (bkz. pickCaptureTile).
+    const touchesAttacker = this.edgeTilesFor(playerId, targetOwnerId).size > 0;
     if (!touchesAttacker) return;
 
     const costMultiplier = targetOwnerId === -1 ? C.NEUTRAL_SIEGE_COST_MULTIPLIER : C.ENEMY_SIEGE_COST_MULTIPLIER;
@@ -273,8 +271,6 @@ export class GameState {
       id: this.nextOrderId++,
       playerId,
       targetOwnerId,
-      focusX: tx,
-      focusY: ty,
       boost: 1,
       progress: 0,
       costMultiplier,
@@ -320,22 +316,6 @@ export class GameState {
     return result;
   }
 
-  /** Cephe hattındaki tile'lar arasından odak noktasına (tıklanan yön) en yakın olanı seçer — büyüme o yöne doğru hissettirsin diye. */
-  private pickCaptureTile(edge: Set<number>, focusX: number, focusY: number): number {
-    let best = -1;
-    let bestDist = Infinity;
-    for (const idx of edge) {
-      const x = idx % this.map.width;
-      const y = Math.floor(idx / this.map.width);
-      const dist = (x - focusX) ** 2 + (y - focusY) ** 2;
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = idx;
-      }
-    }
-    return best;
-  }
-
   cancelAttacks(playerId: number): void {
     this.attackOrders = this.attackOrders.filter((o) => o.playerId !== playerId);
   }
@@ -375,10 +355,10 @@ export class GameState {
       const player = this.players.get(order.playerId);
       if (!player) continue;
 
-      const edge = this.edgeTilesFor(order.playerId, order.targetOwnerId);
+      const edge = Array.from(this.edgeTilesFor(order.playerId, order.targetOwnerId));
       // Bu cephede artık hedefe ait, saldırgana bitişik hiç tile kalmadıysa
       // (tamamen fethedildi ya da erişim kesildi) cephe kendiliğinden biter.
-      if (edge.size === 0) continue;
+      if (edge.length === 0) continue;
 
       const desiredDamage = C.SIEGE_DAMAGE_PER_TICK * order.boost;
       const damage = Math.min(desiredDamage, player.troops / order.costMultiplier);
@@ -387,12 +367,17 @@ export class GameState {
         player.troops -= damage * order.costMultiplier;
         order.progress += damage;
 
-        while (edge.size > 0) {
-          const idx = this.pickCaptureTile(edge, order.focusX, order.focusY);
+        while (edge.length > 0) {
+          // Cephe hattından rastgele bir tile seçilir (swap-pop) — böylece hangi yönün
+          // önce alınacağı tıklanan noktaya değil şansa bağlı olur ve büyüme, zamanla
+          // cephenin tamamına eşit oranda dağılır.
+          const pick = Math.floor(Math.random() * edge.length);
+          const idx = edge[pick];
           const cost = this.tileCaptureCost(idx, order.playerId);
           if (order.progress < cost) break;
           order.progress -= cost;
-          edge.delete(idx);
+          edge[pick] = edge[edge.length - 1];
+          edge.pop();
 
           // Karakol etki alanına giren saldırgan, maliyet yavaşlamasının
           // üstüne bir de anlık asker kaybeder ("kalkan vuruyor" hissi).

@@ -8,7 +8,8 @@ const WATER_COLOR: RGB = [61, 123, 171];
 const SHALLOW_WATER_COLOR: RGB = [139, 176, 205];
 /** Açık/pastel tema — koyu değil, hafif çimen tonu. */
 export const LAND_COLOR: RGB = [168, 204, 140];
-const BORDER_DARKEN = 0.5;
+/** Sınır tile'ları için hafif koyulaştırma — sadece sahipli toprağın kendi kenarında (bkz. main.ts updateBorderFlag), tek piksellik ince bir çizgi hissi versin diye çok koyu değil. */
+const BORDER_DARKEN = 0.72;
 /** Kıyıdan bu kadar tile uzağa kadar su, derin su rengine doğru gradyanla geçer. */
 const MAX_COAST_DIST = 3;
 
@@ -16,6 +17,10 @@ const MIN_ZOOM = 1;
 const MAX_ZOOM = 30;
 const RIPPLE_DURATION_MS = 450;
 const LABEL_MIN_SCALE = 5;
+/** Etiket boyutu bu kadar toprak (tile) için "normal" (1x) kabul edilir; büyük imparatorluklar bunun üzerinde çok daha büyük görünür. */
+const TERRITORY_SIZE_REFERENCE = 36;
+const TERRITORY_FONT_SCALE_MIN = 0.5;
+const TERRITORY_FONT_SCALE_MAX = 4.5;
 
 export function hexToRgb(hex: string): RGB {
   const value = parseInt(hex.replace("#", ""), 16);
@@ -40,6 +45,7 @@ export interface PlayerLabel {
   centerX: number;
   centerY: number;
   troops: number;
+  tileCount: number;
 }
 
 export interface TradeShipRenderData {
@@ -327,9 +333,7 @@ export class MapRenderer {
 
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    // Keskin, kalın "piksel" bloklarını yumuşatmak için bilinear filtreleme açık.
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
+    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(off, 0, 0, mapWidth, mapHeight, offsetX, offsetY, mapWidth * scale, mapHeight * scale);
 
     this.drawDefensePostRanges(scale, offsetX, offsetY);
@@ -534,12 +538,20 @@ export class MapRenderer {
     }
   }
 
-  /** Her oyuncu/bot'un toprak centroid'i üzerinde, ismini (üstte) ve kendi rengiyle asker sayısını (altta) gösteren yüzen etiket. */
+  /** Bir oyuncunun toprak (tile) sayısına göre yazı tipi çarpanı — büyük imparatorluklar çok daha büyük etiketle gösterilir. */
+  private territoryFontScale(tileCount: number): number {
+    const raw = Math.sqrt(Math.max(1, tileCount) / TERRITORY_SIZE_REFERENCE);
+    return Math.max(TERRITORY_FONT_SCALE_MIN, Math.min(TERRITORY_FONT_SCALE_MAX, raw));
+  }
+
+  /** Her oyuncu/bot'un toprak centroid'i üzerinde, ismini (üstte) ve kendi rengiyle asker sayısını (altta) gösteren yüzen etiket. Yazı boyutu toprak büyüklüğüyle orantılı büyür. */
   private drawPlayerLabels(scale: number, offsetX: number, offsetY: number): void {
     if (scale < LABEL_MIN_SCALE || this.playerLabels.length === 0) return;
     const { ctx, canvas } = this;
-    const troopFontSize = Math.min(16, Math.max(9, scale * 0.35));
-    const nameFontSize = Math.max(8, troopFontSize * 0.8);
+    // Canvas'ın çizim uzayı devicePixelRatio ile büyütüldüğü için (bkz. main.ts resize()),
+    // ekranda görünen boyutun cihaz ölçeğinden bağımsız kalması adına buradan geri çevriliyor.
+    const dpr = canvas.clientWidth > 0 ? canvas.width / canvas.clientWidth : 1;
+    const baseTroopFontSize = Math.min(16, Math.max(9, (scale / dpr) * 0.35));
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
@@ -548,6 +560,10 @@ export class MapRenderer {
       const px = offsetX + label.centerX * scale;
       const py = offsetY + label.centerY * scale;
       if (px < -50 || py < -20 || px > canvas.width + 50 || py > canvas.height + 20) continue;
+
+      const territoryScale = this.territoryFontScale(label.tileCount);
+      const troopFontSize = baseTroopFontSize * territoryScale * dpr;
+      const nameFontSize = Math.max(8 * dpr, troopFontSize * 0.8);
 
       ctx.font = `${nameFontSize}px sans-serif`;
       ctx.lineWidth = Math.max(2, nameFontSize * 0.22);

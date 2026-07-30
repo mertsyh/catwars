@@ -28,24 +28,71 @@
         position: fixed;
         top: 8px;
         right: 8px;
-        min-width: 180px;
+        min-width: 210px;
         background: rgba(11, 18, 32, 0.85);
         border: 1px solid #26374f;
         border-radius: 6px;
         padding: 10px 12px;
         color: #e6edf3;
         font: 13px monospace;
-        pointer-events: none;
+        pointer-events: auto;
       }
       #panel .self {
         color: #ffd166;
         margin-bottom: 6px;
+        cursor: pointer;
+      }
+      #panel .self:hover {
+        color: #ffe299;
+      }
+      #leaderboardHeader {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 4px;
+        color: #9fb3c8;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      #leaderboardToggleBtn {
+        background: none;
+        border: none;
+        color: #9fb3c8;
+        font: 11px monospace;
+        cursor: pointer;
+        padding: 2px;
+      }
+      #leaderboardToggleBtn:hover {
+        color: #e6edf3;
       }
       #panel .row {
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
+        display: grid;
+        grid-template-columns: 20px 1fr auto;
+        gap: 8px;
         opacity: 0.85;
+        padding: 2px 4px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      #panel .row:hover {
+        background: rgba(122, 166, 255, 0.15);
+        opacity: 1;
+      }
+      #panel .row-rank {
+        opacity: 0.6;
+        text-align: right;
+      }
+      #panel .row-self {
+        color: #ffd166;
+        opacity: 1;
+        background: rgba(255, 209, 102, 0.08);
+      }
+      #panel .row-separator {
+        text-align: center;
+        opacity: 0.4;
+        padding: 1px 0;
       }
       #hint {
         position: fixed;
