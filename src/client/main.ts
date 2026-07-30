@@ -1,4 +1,4 @@
-import { WARSHIP_SPEED_TILES_PER_TICK } from "../core/constants";
+import { MAX_BOT_COUNT, WARSHIP_SPEED_TILES_PER_TICK } from "../core/constants";
 import { DEFAULT_MAP_ID, MAP_REGISTRY } from "../core/maps";
 import { positionAlongPath } from "../core/pathfinding";
 import type {
@@ -15,7 +15,7 @@ import type {
 import { hexToRgb, LAND_COLOR, MapRenderer } from "./renderer";
 import type { HoverKind } from "./renderer";
 
-const SPAWN_ZOOM = 6;
+const SPAWN_ZOOM = 8;
 const DRAG_THRESHOLD = 4;
 const ZOOM_IN_FACTOR = 1.15;
 const ZOOM_OUT_FACTOR = 1 / 1.15;
@@ -31,6 +31,7 @@ const portBtn = document.getElementById("btn-port") as HTMLButtonElement;
 const warshipBtn = document.getElementById("btn-warship") as HTMLButtonElement;
 const startScreenEl = document.getElementById("startScreen") as HTMLDivElement;
 const mapSelectEl = document.getElementById("mapSelect") as HTMLSelectElement;
+const botCountEl = document.getElementById("botCount") as HTMLInputElement;
 const startBtnEl = document.getElementById("startBtn") as HTMLButtonElement;
 
 function resize(): void {
@@ -49,19 +50,17 @@ let tradeShips = new Map<number, TradeShipDTO>();
 let warships = new Map<number, WarshipDTO>();
 let selectedWarshipId: number | null = null;
 let mapWidth = 0;
+let mapHeight = 0;
+let terrain: Uint8Array = new Uint8Array(0);
 let ownerByTile: Int32Array = new Int32Array(0);
-let regionOf: Int32Array = new Int32Array(0);
-let isBorderTile: Uint8Array = new Uint8Array(0);
 let coastalTile: Uint8Array = new Uint8Array(0);
-let tilesByRegion: number[][] = [];
-let regionNeighbors = new Map<number, number[]>();
 let hasCenteredOnSpawn = false;
 let armedBuilding: "city" | "defensePost" | "port" | "warship" | null = null;
 
 let ws: WebSocket;
 
-/** Faz 9: harita seçim ekranındaki "Oyuna Katıl" tıklamasıyla tetiklenir — bağlantı önceden açılmaz. */
-function startGame(mapId: string): void {
+/** Harita seçim ekranındaki "Oyuna Katıl" tıklamasıyla tetiklenir — bağlantı önceden açılmaz. */
+function startGame(mapId: string, botCount: number): void {
   startScreenEl.style.display = "none";
   statusEl.textContent = "bağlanılıyor...";
 
@@ -71,7 +70,7 @@ function startGame(mapId: string): void {
   ws.addEventListener("open", () => {
     statusEl.textContent = "bağlandı, harita bekleniyor...";
     const name = `Oyuncu-${Math.floor(Math.random() * 1000)}`;
-    ws.send(JSON.stringify({ type: "join", name, mapId }));
+    ws.send(JSON.stringify({ type: "join", name, mapId, botCount }));
   });
 
   ws.addEventListener("close", () => {
@@ -109,66 +108,86 @@ for (const entry of MAP_REGISTRY) {
   mapSelectEl.appendChild(option);
 }
 
-startBtnEl.addEventListener("click", () => startGame(mapSelectEl.value));
+botCountEl.max = String(MAX_BOT_COUNT);
+
+startBtnEl.addEventListener("click", () => {
+  const botCount = Math.max(0, Math.min(MAX_BOT_COUNT, Number(botCountEl.value) || 0));
+  startGame(mapSelectEl.value, botCount);
+});
 
 function handleMap(msg: MapMessage): void {
   mapWidth = msg.width;
+  mapHeight = msg.height;
+  terrain = Uint8Array.from(msg.terrain);
   ownerByTile = new Int32Array(msg.width * msg.height).fill(-1);
-  regionOf = Int32Array.from(msg.regionOf);
-  regionNeighbors = new Map(msg.regions.map((r) => [r.id, r.neighbors]));
-
-  isBorderTile = computeBorderTiles(msg.width, msg.height, regionOf);
   coastalTile = computeCoastalTiles(msg.width, msg.height, msg.terrain);
-  tilesByRegion = groupTilesByRegion(regionOf, msg.regions.length);
 
-  renderer.initTerrain(msg.width, msg.height, msg.terrain, isBorderTile);
-  renderer.setRegionLabels(msg.regions.map((r) => ({ id: r.id, name: r.name, centerX: r.centerX, centerY: r.centerY })));
-  statusEl.textContent = `harita alındı: ${msg.width}x${msg.height}, ${msg.regions.length} bölge`;
-}
-
-function computeBorderTiles(width: number, height: number, regionOfTile: Int32Array): Uint8Array {
-  const border = new Uint8Array(width * height);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      const rid = regionOfTile[idx];
-      if (rid === -1) continue;
-      const isEdge =
-        (x > 0 && regionOfTile[idx - 1] !== rid) ||
-        (x < width - 1 && regionOfTile[idx + 1] !== rid) ||
-        (y > 0 && regionOfTile[idx - width] !== rid) ||
-        (y < height - 1 && regionOfTile[idx + width] !== rid);
-      if (isEdge) border[idx] = 1;
-    }
-  }
-  return border;
+  renderer.initTerrain(msg.width, msg.height, msg.terrain);
+  statusEl.textContent = `harita alındı: ${msg.width}x${msg.height}`;
 }
 
 /** Bir kara tile'ının en az bir su komşusu olup olmadığını işaretler (liman yerleşimi için hover/tık doğrulaması). */
-function computeCoastalTiles(width: number, height: number, terrain: ArrayLike<number>): Uint8Array {
+function computeCoastalTiles(width: number, height: number, terrainSrc: ArrayLike<number>): Uint8Array {
   const coastal = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
-      if (terrain[idx] !== 1) continue;
+      if (terrainSrc[idx] !== 1) continue;
       const isCoast =
-        (x > 0 && terrain[idx - 1] !== 1) ||
-        (x < width - 1 && terrain[idx + 1] !== 1) ||
-        (y > 0 && terrain[idx - width] !== 1) ||
-        (y < height - 1 && terrain[idx + width] !== 1);
+        (x > 0 && terrainSrc[idx - 1] !== 1) ||
+        (x < width - 1 && terrainSrc[idx + 1] !== 1) ||
+        (y > 0 && terrainSrc[idx - width] !== 1) ||
+        (y < height - 1 && terrainSrc[idx + width] !== 1);
       if (isCoast) coastal[idx] = 1;
     }
   }
   return coastal;
 }
 
-function groupTilesByRegion(regionOfTile: Int32Array, regionCount: number): number[][] {
-  const groups: number[][] = Array.from({ length: regionCount }, () => []);
-  for (let i = 0; i < regionOfTile.length; i++) {
-    const rid = regionOfTile[i];
-    if (rid !== -1) groups[rid].push(i);
+/** Bir tile'ın 4 yönlü kara/su komşularının index'leri (harita kenarında eksik yön atlanır). */
+function tileNeighbors(idx: number): number[] {
+  const x = idx % mapWidth;
+  const y = Math.floor(idx / mapWidth);
+  const result: number[] = [];
+  if (x > 0) result.push(idx - 1);
+  if (x < mapWidth - 1) result.push(idx + 1);
+  if (y > 0) result.push(idx - mapWidth);
+  if (y < mapHeight - 1) result.push(idx + mapWidth);
+  return result;
+}
+
+/** Tile'ın güncel sahiplik rengini (kendi rengi veya nötr kara rengi) yeniden boyar — su tile'ları hiç etkilenmez. */
+function paintTile(idx: number): void {
+  if (terrain[idx] !== 1) return;
+  const owner = ownerByTile[idx];
+  const player = owner === -1 ? null : players.get(owner);
+  renderer.setOwnership(idx, player ? hexToRgb(player.color) : LAND_COLOR);
+}
+
+/** Tile'ın komşularından biri farklı sahipse (veya suysa) sınır (border) olarak işaretler — bölge sistemi kalkınca sınırların TEK göstergesi bu. */
+function updateBorderFlag(idx: number): void {
+  if (terrain[idx] !== 1) {
+    renderer.setBorderFlag(idx, false);
+    return;
   }
-  return groups;
+  const owner = ownerByTile[idx];
+  const isBorder = tileNeighbors(idx).some((n) => ownerByTile[n] !== owner);
+  renderer.setBorderFlag(idx, isBorder);
+}
+
+/** Bir tile'ın sahipliği değişince kendisini ve komşularını (onların sınır durumu da değişebileceği için) yeniden boyar. */
+function repaintTileAndNeighbors(idx: number): void {
+  updateBorderFlag(idx);
+  paintTile(idx);
+  for (const n of tileNeighbors(idx)) {
+    updateBorderFlag(n);
+    paintTile(n);
+  }
+}
+
+function applyOwnershipChange(idx: number, ownerId: number): void {
+  ownerByTile[idx] = ownerId;
+  repaintTileAndNeighbors(idx);
 }
 
 function handleInit(msg: InitMessage): void {
@@ -176,16 +195,17 @@ function handleInit(msg: InitMessage): void {
   updatePlayers(msg.players);
   updateBuildings(msg.buildings);
 
+  for (let i = 0; i < msg.owner.length; i++) ownerByTile[i] = msg.owner[i];
   for (let i = 0; i < msg.owner.length; i++) {
-    ownerByTile[i] = msg.owner[i];
-    if (msg.owner[i] !== -1) {
-      const player = players.get(msg.owner[i]);
-      if (player) renderer.setOwnership(i, hexToRgb(player.color));
-    }
+    if (terrain[i] !== 1) continue;
+    paintTile(i);
+    updateBorderFlag(i);
   }
+
   tradeShips = new Map(msg.tradeShips.map((s) => [s.id, s]));
   warships = new Map(msg.warships.map((s) => [s.id, s]));
   renderer.setServerTimeSync(msg.tick);
+  renderer.setContestedTiles(msg.contestedTiles);
   updateTradeShipRenderer();
   updateWarshipRenderer();
 
@@ -201,9 +221,7 @@ function handleTick(msg: TickMessage): void {
   updateBuildings(msg.buildings);
 
   for (const change of msg.changes) {
-    ownerByTile[change.i] = change.o;
-    const player = change.o === -1 ? null : players.get(change.o);
-    renderer.setOwnership(change.i, player ? hexToRgb(player.color) : LAND_COLOR);
+    applyOwnershipChange(change.i, change.o);
   }
 
   for (const ship of msg.spawnedTradeShips) tradeShips.set(ship.id, ship);
@@ -211,6 +229,7 @@ function handleTick(msg: TickMessage): void {
   warships = new Map(msg.warships.map((s) => [s.id, s]));
   if (selectedWarshipId !== null && !warships.has(selectedWarshipId)) selectedWarshipId = null;
   renderer.setServerTimeSync(msg.tick);
+  renderer.setContestedTiles(msg.contestedTiles);
   updateTradeShipRenderer();
   updateWarshipRenderer();
 
@@ -283,6 +302,11 @@ function handleGameOver(msg: GameOverMessage): void {
 
 function updatePlayers(list: PlayerStateDTO[]): void {
   players = new Map(list.map((p) => [p.id, p]));
+  renderer.setPlayerLabels(
+    list
+      .filter((p) => p.tileCount > 0)
+      .map((p) => ({ id: p.id, name: p.name, color: p.color, centerX: p.centerX, centerY: p.centerY, troops: p.troops })),
+  );
   renderPanel();
 }
 
@@ -295,39 +319,17 @@ function updateBuildings(list: BuildingDTO[]): void {
 
 function centerCameraOnSelf(): void {
   if (selfId === null || mapWidth === 0) return;
-  let sumX = 0;
-  let sumY = 0;
-  let count = 0;
-  for (let i = 0; i < ownerByTile.length; i++) {
-    if (ownerByTile[i] === selfId) {
-      sumX += i % mapWidth;
-      sumY += Math.floor(i / mapWidth);
-      count++;
-    }
-  }
-  if (count === 0) return;
-  renderer.centerOn(sumX / count + 0.5, sumY / count + 0.5, SPAWN_ZOOM);
+  const self = players.get(selfId);
+  if (!self || self.tileCount === 0) return;
+  renderer.centerOn(self.centerX + 0.5, self.centerY + 0.5, SPAWN_ZOOM);
 }
 
-/** Bölgede en az bir tile'ımız var mı (bölge artık birden fazla oyuncu arasında bölünebilir — bkz. orantılı parçalı alım). */
-function regionHasOwnTile(regionId: number): boolean {
+/** Tile land mi, bize ait değil mi ve kendi topraklarımıza (4 yön) bitişik mi — tıklanabilir saldırı hedefi. */
+function isTileAttackable(tileIndex: number): boolean {
   if (selfId === null) return false;
-  return (tilesByRegion[regionId] ?? []).some((idx) => ownerByTile[idx] === selfId);
-}
-
-/** Bu bölgeye saldırabilir miyim: ya zaten içinde bir parçam var (devam ettirebilirim) ya da komşu bir bölgede tile'ım var. */
-function isRegionAdjacentToSelf(regionId: number): boolean {
-  if (selfId === null) return false;
-  if (regionHasOwnTile(regionId)) return true;
-  const neighbors = regionNeighbors.get(regionId) ?? [];
-  return neighbors.some((nid) => regionHasOwnTile(nid));
-}
-
-/** Bölgedeki HER tile bize mi ait — artık saldırılacak bir şey kalmadı mı? */
-function regionFullyOwnedBySelf(regionId: number): boolean {
-  if (selfId === null) return false;
-  const tiles = tilesByRegion[regionId] ?? [];
-  return tiles.length > 0 && tiles.every((idx) => ownerByTile[idx] === selfId);
+  if (terrain[tileIndex] !== 1) return false;
+  if (ownerByTile[tileIndex] === selfId) return false;
+  return tileNeighbors(tileIndex).some((n) => ownerByTile[n] === selfId);
 }
 
 function renderPanel(): void {
@@ -363,11 +365,6 @@ function updateHover(clientX: number, clientY: number): void {
     renderer.setHoverRegion([], "invalid");
     return;
   }
-  const regionId = regionOf[tileIndex];
-  if (regionId === -1) {
-    renderer.setHoverRegion([], "invalid");
-    return;
-  }
 
   let kind: HoverKind;
   if (armedBuilding) {
@@ -376,11 +373,10 @@ function updateHover(clientX: number, clientY: number): void {
   } else if (ownerByTile[tileIndex] === selfId) {
     kind = "self";
   } else {
-    kind = isRegionAdjacentToSelf(regionId) ? "valid" : "invalid";
+    kind = isTileAttackable(tileIndex) ? "valid" : "invalid";
   }
 
-  const borderOfRegion = (tilesByRegion[regionId] ?? []).filter((idx) => isBorderTile[idx] === 1);
-  renderer.setHoverRegion(borderOfRegion, kind);
+  renderer.setHoverRegion([tileIndex], kind);
 }
 
 function setArmedBuilding(type: "city" | "defensePost" | "port" | "warship" | null): void {
@@ -406,7 +402,7 @@ function handleClick(clientX: number, clientY: number): void {
   if (selectedWarshipId !== null) {
     const shipId = selectedWarshipId;
     setSelectedWarship(null);
-    if (regionOf[tileIndex] === -1) {
+    if (terrain[tileIndex] !== 1) {
       renderer.addRipple(world.x, world.y, "move");
       ws.send(JSON.stringify({ type: "moveShip", shipId, targetTileIndex: tileIndex }));
     } else {
@@ -423,9 +419,6 @@ function handleClick(clientX: number, clientY: number): void {
       return;
     }
   }
-
-  const regionId = regionOf[tileIndex];
-  if (regionId === -1) return;
 
   if (armedBuilding === "warship") {
     const port = findOwnPortAtTile(tileIndex);
@@ -451,9 +444,11 @@ function handleClick(clientX: number, clientY: number): void {
     return;
   }
 
-  const looksValid = !regionFullyOwnedBySelf(regionId) && isRegionAdjacentToSelf(regionId);
+  if (terrain[tileIndex] !== 1) return;
+
+  const looksValid = isTileAttackable(tileIndex);
   renderer.addRipple(world.x, world.y, looksValid ? "attack" : "invalid");
-  ws.send(JSON.stringify({ type: "attack", regionId }));
+  ws.send(JSON.stringify({ type: "attack", tileIndex }));
 }
 
 cityBtn.addEventListener("click", () => {

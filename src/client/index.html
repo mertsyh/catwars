@@ -134,6 +134,7 @@
         color: #9fb3c8;
       }
       #startBox select,
+      #startBox input,
       #startBox button {
         font: 13px monospace;
         padding: 8px 10px;
@@ -157,13 +158,15 @@
         <h1>OpenFrontClone</h1>
         <label for="mapSelect">Harita</label>
         <select id="mapSelect"></select>
+        <label for="botCount">Bot sayısı</label>
+        <input type="number" id="botCount" min="0" max="400" value="20" />
         <button id="startBtn">Oyuna Katıl</button>
       </div>
     </div>
     <div id="status"></div>
     <div id="panel"></div>
     <div id="hint">
-      Tekerlek: yakınlaştır/uzaklaştır &nbsp;|&nbsp; Sürükle: haritada gez &nbsp;|&nbsp; Tık: bölgeye saldır
+      Tekerlek: yakınlaştır/uzaklaştır &nbsp;|&nbsp; Sürükle: haritada gez &nbsp;|&nbsp; Tık: bitişik toprağa saldır
       (tekrar tıkla: hızlandır) &nbsp;|&nbsp; Sağ tık: saldırıları/gemi seçimini iptal et &nbsp;|&nbsp; Gemine tıkla:
       seç, suya tıkla: hareket ettir
     </div>

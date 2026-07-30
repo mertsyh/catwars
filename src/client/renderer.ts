@@ -1,12 +1,14 @@
-import { TICK_RATE } from "../core/constants";
+import { DEFENSE_POST_RADIUS, TICK_RATE } from "../core/constants";
 import { positionAlongPath } from "../core/pathfinding";
 
 type RGB = [number, number, number];
 
-const WATER_COLOR: RGB = [14, 42, 74];
-const SHALLOW_WATER_COLOR: RGB = [72, 132, 168];
-export const LAND_COLOR: RGB = [47, 82, 51];
-const BORDER_DARKEN = 0.72;
+/** #3D7BAB */
+const WATER_COLOR: RGB = [61, 123, 171];
+const SHALLOW_WATER_COLOR: RGB = [139, 176, 205];
+/** Açık/pastel tema — koyu değil, hafif çimen tonu. */
+export const LAND_COLOR: RGB = [168, 204, 140];
+const BORDER_DARKEN = 0.5;
 /** Kıyıdan bu kadar tile uzağa kadar su, derin su rengine doğru gradyanla geçer. */
 const MAX_COAST_DIST = 3;
 
@@ -20,16 +22,24 @@ export function hexToRgb(hex: string): RGB {
   return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
 }
 
+/** Asker sayısı etiketi için kısa gösterim (1.4k, 12k, ...). */
+function formatTroopCount(troops: number): string {
+  if (troops >= 1000) return `${(troops / 1000).toFixed(troops >= 10000 ? 0 : 1)}k`;
+  return String(Math.round(troops));
+}
+
 export interface BuildingMarker {
   tileIndex: number;
   type: string;
 }
 
-export interface RegionLabel {
+export interface PlayerLabel {
   id: number;
   name: string;
+  color: string;
   centerX: number;
   centerY: number;
+  troops: number;
 }
 
 export interface TradeShipRenderData {
@@ -98,9 +108,10 @@ export class MapRenderer {
   private zoom = MIN_ZOOM;
 
   private buildingMarkers: BuildingMarker[] = [];
-  private regionLabels: RegionLabel[] = [];
+  private playerLabels: PlayerLabel[] = [];
   private hoverTiles: number[] = [];
   private hoverKind: HoverKind = "invalid";
+  private contestedTiles: number[] = [];
   private ripples: Ripple[] = [];
   private rafId: number | null = null;
   private tradeShips: TradeShipRenderData[] = [];
@@ -119,10 +130,15 @@ export class MapRenderer {
     this.offCtx = offCtx;
   }
 
-  initTerrain(width: number, height: number, terrain: ArrayLike<number>, borderTiles: Uint8Array): void {
+  /**
+   * Haritayı sıfırdan çizer. Bölge sistemi kaldırıldığından sınır (border)
+   * artık statik bir bölge ızgarasından değil, sahiplik değiştikçe tek tek
+   * tile bazında güncellenir (bkz. setBorderFlag) — burada hepsi boş başlar.
+   */
+  initTerrain(width: number, height: number, terrain: ArrayLike<number>): void {
     this.mapWidth = width;
     this.mapHeight = height;
-    this.borderTiles = borderTiles;
+    this.borderTiles = new Uint8Array(width * height);
     this.off.width = width;
     this.off.height = height;
     this.camX = width / 2;
@@ -203,12 +219,18 @@ export class MapRenderer {
     this.imageDirty = true;
   }
 
+  /** Bir tile'ın sınır (border) durumunu günceller (repaint yapmaz — çağıran, ardından setOwnership ile aynı tile'ı yeniden boyamalı ki darken uygulansın). */
+  setBorderFlag(index: number, isBorder: boolean): void {
+    if (!this.borderTiles) return;
+    this.borderTiles[index] = isBorder ? 1 : 0;
+  }
+
   setBuildings(markers: BuildingMarker[]): void {
     this.buildingMarkers = markers;
   }
 
-  setRegionLabels(regions: RegionLabel[]): void {
-    this.regionLabels = regions;
+  setPlayerLabels(labels: PlayerLabel[]): void {
+    this.playerLabels = labels;
   }
 
   setTradeShips(ships: TradeShipRenderData[]): void {
@@ -233,6 +255,11 @@ export class MapRenderer {
   setHoverRegion(tiles: number[], kind: HoverKind): void {
     this.hoverTiles = tiles;
     this.hoverKind = kind;
+  }
+
+  /** Karşılıklı savaşan iki oyuncunun o anki cephe hattı tile'ları — kırmızı vurgulanır (bkz. GameState.computeContestedTiles). */
+  setContestedTiles(tiles: number[]): void {
+    this.contestedTiles = tiles;
   }
 
   addRipple(worldX: number, worldY: number, kind: RippleKind): void {
@@ -300,14 +327,18 @@ export class MapRenderer {
 
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.imageSmoothingEnabled = false;
+    // Keskin, kalın "piksel" bloklarını yumuşatmak için bilinear filtreleme açık.
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.drawImage(off, 0, 0, mapWidth, mapHeight, offsetX, offsetY, mapWidth * scale, mapHeight * scale);
 
+    this.drawDefensePostRanges(scale, offsetX, offsetY);
     this.drawBuildingMarkers(scale, offsetX, offsetY);
+    this.drawContestedTiles(scale, offsetX, offsetY);
     this.drawHoverRegion(scale, offsetX, offsetY);
     this.drawTradeShips(scale, offsetX, offsetY);
     this.drawWarships(scale, offsetX, offsetY);
-    this.drawRegionLabels(scale, offsetX, offsetY);
+    this.drawPlayerLabels(scale, offsetX, offsetY);
     this.drawRipples(scale, offsetX, offsetY);
   }
 
@@ -345,6 +376,30 @@ export class MapRenderer {
       halfViewH * 2 > this.mapHeight
         ? this.mapHeight / 2
         : Math.max(halfViewH, Math.min(this.mapHeight - halfViewH, this.camY));
+  }
+
+  /** Karakolların etki alanını (DEFENSE_POST_RADIUS) yuvarlak, yarı saydam bir vurgu olarak çizer — ikonların altında kalsın diye önce bu çizilir. */
+  private drawDefensePostRanges(scale: number, offsetX: number, offsetY: number): void {
+    if (this.buildingMarkers.length === 0) return;
+    const { ctx, mapWidth } = this;
+    const radius = DEFENSE_POST_RADIUS * scale;
+
+    ctx.fillStyle = "rgba(176, 190, 197, 0.12)";
+    ctx.strokeStyle = "rgba(176, 190, 197, 0.5)";
+    ctx.lineWidth = Math.max(1, scale * 0.06);
+
+    for (const marker of this.buildingMarkers) {
+      if (marker.type !== "defensePost") continue;
+      const x = marker.tileIndex % mapWidth;
+      const y = Math.floor(marker.tileIndex / mapWidth);
+      const px = offsetX + (x + 0.5) * scale;
+      const py = offsetY + (y + 0.5) * scale;
+
+      ctx.beginPath();
+      ctx.arc(px, py, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
   }
 
   private drawBuildingMarkers(scale: number, offsetX: number, offsetY: number): void {
@@ -453,6 +508,19 @@ export class MapRenderer {
     }
   }
 
+  /** Karşılıklı savaşan iki oyuncunun cephe hattını kırmızı vurgular — "burada çarpışılıyor" hissi. */
+  private drawContestedTiles(scale: number, offsetX: number, offsetY: number): void {
+    if (this.contestedTiles.length === 0) return;
+    const { ctx, mapWidth } = this;
+    ctx.fillStyle = "rgba(220, 40, 40, 0.6)";
+
+    for (const idx of this.contestedTiles) {
+      const x = idx % mapWidth;
+      const y = Math.floor(idx / mapWidth);
+      ctx.fillRect(offsetX + x * scale, offsetY + y * scale, scale + 0.5, scale + 0.5);
+    }
+  }
+
   private drawHoverRegion(scale: number, offsetX: number, offsetY: number): void {
     if (this.hoverTiles.length === 0) return;
     const { ctx, mapWidth } = this;
@@ -466,23 +534,35 @@ export class MapRenderer {
     }
   }
 
-  private drawRegionLabels(scale: number, offsetX: number, offsetY: number): void {
-    if (scale < LABEL_MIN_SCALE || this.regionLabels.length === 0) return;
+  /** Her oyuncu/bot'un toprak centroid'i üzerinde, ismini (üstte) ve kendi rengiyle asker sayısını (altta) gösteren yüzen etiket. */
+  private drawPlayerLabels(scale: number, offsetX: number, offsetY: number): void {
+    if (scale < LABEL_MIN_SCALE || this.playerLabels.length === 0) return;
     const { ctx, canvas } = this;
-    const fontSize = Math.min(16, Math.max(9, scale * 0.35));
-    ctx.font = `${fontSize}px sans-serif`;
+    const troopFontSize = Math.min(16, Math.max(9, scale * 0.35));
+    const nameFontSize = Math.max(8, troopFontSize * 0.8);
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.lineWidth = Math.max(2, fontSize * 0.18);
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.65)";
-    ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
 
-    for (const region of this.regionLabels) {
-      const px = offsetX + region.centerX * scale;
-      const py = offsetY + region.centerY * scale;
+    for (const label of this.playerLabels) {
+      const px = offsetX + label.centerX * scale;
+      const py = offsetY + label.centerY * scale;
       if (px < -50 || py < -20 || px > canvas.width + 50 || py > canvas.height + 20) continue;
-      ctx.strokeText(region.name, px, py);
-      ctx.fillText(region.name, px, py);
+
+      ctx.font = `${nameFontSize}px sans-serif`;
+      ctx.lineWidth = Math.max(2, nameFontSize * 0.22);
+      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+      const namePy = py - troopFontSize * 0.55;
+      ctx.strokeText(label.name, px, namePy);
+      ctx.fillText(label.name, px, namePy);
+
+      const troopText = formatTroopCount(label.troops);
+      ctx.font = `bold ${troopFontSize}px sans-serif`;
+      ctx.lineWidth = Math.max(2, troopFontSize * 0.22);
+      ctx.fillStyle = label.color;
+      const troopPy = py + nameFontSize * 0.55;
+      ctx.strokeText(troopText, px, troopPy);
+      ctx.fillText(troopText, px, troopPy);
     }
   }
 

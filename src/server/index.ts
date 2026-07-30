@@ -2,9 +2,10 @@ import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
+import { CIVILIZATION_NAMES } from "../core/civilizationNames";
 import { GameMap } from "../core/GameMap";
 import { GameState, TileChange } from "../core/GameState";
-import { TICK_RATE } from "../core/constants";
+import { BOT_REST_TROOP_FRACTION, DEFAULT_BOT_COUNT, MAX_BOT_COUNT, TICK_RATE } from "../core/constants";
 import { DEFAULT_MAP_ID, MAP_REGISTRY, RANDOM_ISLAND_MAP_ID } from "../core/maps";
 import { TradeShip, Warship } from "../core/types";
 import type {
@@ -12,16 +13,13 @@ import type {
   ClientMessage,
   MapMessage,
   PlayerStateDTO,
-  RegionOwnerDTO,
   ServerMessage,
-  SiegeDTO,
   TradeShipDTO,
   WarshipDTO,
 } from "../core/protocol";
 
 const PORT = Number(process.env.PORT ?? 3000);
 const TICK_INTERVAL_MS = 1000 / TICK_RATE;
-const BOT_COUNT = 3;
 const BOT_DECISION_INTERVAL_MS = 800;
 const BOT_PORT_BUILD_CHANCE = 0.05;
 
@@ -91,6 +89,8 @@ function toDTO(state: GameState): PlayerStateDTO[] {
     troops: Math.round(p.troops),
     gold: Math.round(p.gold),
     tileCount: p.tileCount,
+    centerX: p.centerX,
+    centerY: p.centerY,
   }));
 }
 
@@ -101,19 +101,6 @@ function toBuildingDTOs(state: GameState): BuildingDTO[] {
     ownerId: b.ownerId,
     tileIndex: b.tileIndex,
   }));
-}
-
-function toSiegeDTOs(state: GameState): SiegeDTO[] {
-  return state.getActiveSieges().map((s) => ({
-    regionId: s.regionId,
-    attackerId: s.playerId,
-    garrison: Math.round(s.garrison),
-    maxGarrison: Math.round(s.maxGarrison),
-  }));
-}
-
-function toRegionOwnerDTOs(state: GameState): RegionOwnerDTO[] {
-  return state.regions.map((r) => ({ id: r.id, ownerId: r.ownerId }));
 }
 
 function toTradeShipDTO(s: TradeShip): TradeShipDTO {
@@ -148,24 +135,41 @@ function broadcastChanges(state: GameState, changes: TileChange[]): void {
     changes: changes.map((c) => ({ i: c.index, o: c.ownerId })),
     players: toDTO(state),
     buildings: toBuildingDTOs(state),
-    sieges: toSiegeDTOs(state),
+    contestedTiles: state.computeContestedTiles(),
     spawnedTradeShips: [],
     arrivedTradeShipIds: [],
     warships: toWarshipDTOs(state),
   });
 }
 
-function spawnBots(state: GameState): void {
-  for (let i = 0; i < BOT_COUNT; i++) {
-    const { player, changes } = state.addPlayer(`Bot-${i + 1}`);
-    botIds.push(player.id);
-    console.log(`[server] bot eklendi: ${player.name} (#${player.id})`);
-    broadcastChanges(state, changes);
+function shuffle<T>(items: T[]): T[] {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
+  return arr;
 }
 
-/** Oyunu (harita + GameState + bot'lar) ilk çağrıda kurar, sonrakilerde mevcut örneği döndürür (Faz 9). */
-function ensureGame(requestedMapId: string | undefined): GameInstance {
+/** Havuzdaki isim sayısından (117) fazla bot varsa, isimler karıştırılıp tekrar tekrar kullanılır — ikinci turdan itibaren "İsim 2", "İsim 3" gibi ayırt edilir. */
+function botName(index: number, shuffled: string[]): string {
+  const cycle = Math.floor(index / shuffled.length) + 1;
+  const base = shuffled[index % shuffled.length];
+  return cycle > 1 ? `${base} ${cycle}` : base;
+}
+
+function spawnBots(state: GameState, count: number): void {
+  const names = shuffle(CIVILIZATION_NAMES);
+  for (let i = 0; i < count; i++) {
+    const { player, changes } = state.addPlayer(botName(i, names), true);
+    botIds.push(player.id);
+    broadcastChanges(state, changes);
+  }
+  console.log(`[server] ${count} bot eklendi`);
+}
+
+/** Oyunu (harita + GameState + bot'lar) ilk çağrıda kurar, sonrakilerde mevcut örneği döndürür. */
+function ensureGame(requestedMapId: string | undefined, requestedBotCount: number | undefined): GameInstance {
   if (instance) return instance;
 
   const mapId = requestedMapId && MAP_REGISTRY.some((m) => m.id === requestedMapId) ? requestedMapId : DEFAULT_MAP_ID;
@@ -173,7 +177,12 @@ function ensureGame(requestedMapId: string | undefined): GameInstance {
   const state = new GameState(map);
   instance = { map, state };
   console.log(`[server] harita yüklendi: ${mapId} (${map.width}x${map.height})`);
-  spawnBots(state);
+
+  const botCount =
+    Number.isInteger(requestedBotCount) && requestedBotCount !== undefined
+      ? Math.max(0, Math.min(MAX_BOT_COUNT, requestedBotCount))
+      : DEFAULT_BOT_COUNT;
+  spawnBots(state, botCount);
   return instance;
 }
 
@@ -183,14 +192,6 @@ function buildMapMessage(inst: GameInstance): MapMessage {
     width: inst.map.width,
     height: inst.map.height,
     terrain: Array.from(inst.map.terrain),
-    regionOf: Array.from(inst.map.regionOf),
-    regions: inst.state.regions.map((r) => ({
-      id: r.id,
-      name: r.name,
-      centerX: r.centerX,
-      centerY: r.centerY,
-      neighbors: Array.from(r.neighbors),
-    })),
   };
 }
 
@@ -206,12 +207,11 @@ wss.on("connection", (socket) => {
     }
 
     if (message.type === "join" && !socketPlayerIds.has(socket)) {
-      const { map, state } = ensureGame(message.mapId);
+      const { map, state } = ensureGame(message.mapId, message.botCount);
       const name = (message.name ?? "").toString().trim().slice(0, 20) || "Oyuncu";
       const { player, changes } = state.addPlayer(name);
       socketPlayerIds.set(socket, player.id);
-      const homeRegion = state.regions.find((r) => r.ownerId === player.id);
-      console.log(`[server] katıldı: ${player.name} (#${player.id}) bölge=${homeRegion?.name ?? "-"}`);
+      console.log(`[server] katıldı: ${player.name} (#${player.id})`);
 
       send(socket, buildMapMessage(instance!));
       send(socket, {
@@ -219,10 +219,9 @@ wss.on("connection", (socket) => {
         selfId: player.id,
         tick: state.tick,
         owner: Array.from(map.owner),
-        regionOwners: toRegionOwnerDTOs(state),
         players: toDTO(state),
         buildings: toBuildingDTOs(state),
-        sieges: toSiegeDTOs(state),
+        contestedTiles: state.computeContestedTiles(),
         tradeShips: Array.from(state.tradeShips.values()).map(toTradeShipDTO),
         warships: toWarshipDTOs(state),
       });
@@ -235,8 +234,8 @@ wss.on("connection", (socket) => {
     const playerId = socketPlayerIds.get(socket);
 
     if (message.type === "attack") {
-      if (playerId !== undefined && Number.isInteger(message.regionId)) {
-        state.queueAttack(playerId, message.regionId);
+      if (playerId !== undefined && Number.isInteger(message.tileIndex)) {
+        state.queueAttack(playerId, message.tileIndex);
       }
     }
 
@@ -285,10 +284,18 @@ setInterval(() => {
   if (!instance) return;
   const { state } = instance;
   for (const botId of botIds) {
-    if (!state.players.has(botId)) continue;
-    const targetRegionId = state.getRandomAdjacentRegion(botId);
-    if (targetRegionId !== null) {
-      state.queueAttack(botId, targetRegionId);
+    const bot = state.players.get(botId);
+    if (!bot) continue;
+
+    // Asker kritik seviyedeyse tüm cepheleri bırakıp dinlenir — sürekli
+    // sıfırda kilitlenip durmasın, rejenerasyon askerini gerçekten toplasın.
+    if (bot.troops < bot.maxTroops * BOT_REST_TROOP_FRACTION) {
+      state.cancelAttacks(botId);
+    } else {
+      const targetTile = state.getBotAttackTarget(botId);
+      if (targetTile !== null) {
+        state.queueAttack(botId, targetTile);
+      }
     }
 
     if (Math.random() < BOT_PORT_BUILD_CHANCE) {
@@ -312,7 +319,7 @@ setInterval(() => {
     changes: changes.map((c) => ({ i: c.index, o: c.ownerId })),
     players: toDTO(state),
     buildings: toBuildingDTOs(state),
-    sieges: toSiegeDTOs(state),
+    contestedTiles: state.computeContestedTiles(),
     spawnedTradeShips: spawnedTradeShips.map(toTradeShipDTO),
     arrivedTradeShipIds,
     warships: toWarshipDTOs(state),

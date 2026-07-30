@@ -1,18 +1,8 @@
-export interface RegionMeta {
-  id: number;
-  name: string;
-  centerX: number;
-  centerY: number;
-  neighbors: number[];
-}
-
 export interface MapMessage {
   type: "map";
   width: number;
   height: number;
   terrain: number[];
-  regionOf: number[];
-  regions: RegionMeta[];
 }
 
 export interface PlayerStateDTO {
@@ -22,6 +12,9 @@ export interface PlayerStateDTO {
   troops: number;
   gold: number;
   tileCount: number;
+  /** Sahip olunan toprağın centroid'i — haritada askersayısı etiketinin çizileceği nokta (bkz. renderer setPlayerLabels). */
+  centerX: number;
+  centerY: number;
 }
 
 export interface BuildingDTO {
@@ -29,18 +22,6 @@ export interface BuildingDTO {
   type: string;
   ownerId: number;
   tileIndex: number;
-}
-
-export interface SiegeDTO {
-  regionId: number;
-  attackerId: number;
-  garrison: number;
-  maxGarrison: number;
-}
-
-export interface RegionOwnerDTO {
-  id: number;
-  ownerId: number;
 }
 
 export interface TradeShipDTO {
@@ -68,10 +49,10 @@ export interface InitMessage {
   selfId: number;
   tick: number;
   owner: number[];
-  regionOwners: RegionOwnerDTO[];
   players: PlayerStateDTO[];
   buildings: BuildingDTO[];
-  sieges: SiegeDTO[];
+  /** Karşılıklı savaş halindeki oyuncuların o anki cephe hattı tile'ları — istemci bunları kırmızı vurgular (bkz. GameState.computeContestedTiles). */
+  contestedTiles: number[];
   tradeShips: TradeShipDTO[];
   warships: WarshipDTO[];
 }
@@ -87,7 +68,7 @@ export interface TickMessage {
   changes: TileChangeDTO[];
   players: PlayerStateDTO[];
   buildings: BuildingDTO[];
-  sieges: SiegeDTO[];
+  contestedTiles: number[];
   spawnedTradeShips: TradeShipDTO[];
   arrivedTradeShipIds: number[];
   warships: WarshipDTO[];
@@ -104,13 +85,16 @@ export type ServerMessage = MapMessage | InitMessage | TickMessage | GameOverMes
 export interface JoinMessage {
   type: "join";
   name: string;
-  /** Faz 9: sadece henüz kimse katılmamışken (oyun ilk kez kuruluyorken) anlamlı. */
+  /** Sadece henüz kimse katılmamışken (oyun ilk kez kuruluyorken) anlamlı. */
   mapId?: string;
+  /** Bot sayısı (0..MAX_BOT_COUNT) — mapId gibi sadece oyunun ilk kurulduğu join'de geçerli. */
+  botCount?: number;
 }
 
 export interface AttackMessage {
   type: "attack";
-  regionId: number;
+  /** Tıklanan hedef tile — fetih, buradan etrafa doğru bir alana yayılır (bkz. GameState.queueAttack). */
+  tileIndex: number;
 }
 
 export interface BuildMessage {
